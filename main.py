@@ -7,15 +7,12 @@ from contextlib import closing
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
+    Application, CommandHandler, CallbackQueryHandler, ContextTypes
 )
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-MAX_LAVORATORI = 10
 MIN_PRESENTI = 4
+MAX_LAVORATORI = 10
 
 DATA_DIR = "/data" if os.path.isdir("/data") else "."
 DB = os.path.join(DATA_DIR, "ferie.db")
@@ -55,31 +52,166 @@ def assenti(giorno):
 
 
 def conteggio(giorno):
+    totale = len(lavoratori())
     numero_assenti = len(assenti(giorno))
-    return MAX_LAVORATORI - numero_assenti, numero_assenti
+    return max(0, totale - numero_assenti), numero_assenti
+
+
+def vista_mese(anno, mese):
+    nomi_mesi = [
+        "Gennaio", "Febbraio", "Marzo", "Aprile",
+        "Maggio", "Giugno", "Luglio", "Agosto",
+        "Settembre", "Ottobre", "Novembre", "Dicembre"
+    ]
+
+    testo = (
+        f"📅 CALENDARIO FERIE\n"
+        f"{nomi_mesi[mese - 1]} {anno}\n\n"
+        "🔵 Oggi   🟢 Regolare   🔴 Meno di 4 presenti\n"
+    )
+
+    tastiera = [[
+        InlineKeyboardButton(g, callback_data="noop")
+        for g in ["L", "M", "M", "G", "V", "S", "D"]
+    ]]
+
+    for settimana in calendar.monthcalendar(anno, mese):
+        riga = []
+        for numero in settimana:
+            if numero == 0:
+                riga.append(
+                    InlineKeyboardButton(" ", callback_data="noop")
+                )
+                continue
+
+            giorno = date(anno, mese, numero)
+            presenti, _ = conteggio(giorno.isoformat())
+
+            if giorno == date.today():
+                simbolo = "🔵"
+            elif presenti < MIN_PRESENTI:
+                simbolo = "🔴"
+            else:
+                simbolo = "🟢"
+
+            riga.append(InlineKeyboardButton(
+                f"{simbolo}{numero}",
+                callback_data=f"d|{giorno.isoformat()}"
+            ))
+
+        tastiera.append(riga)
+
+    precedente = date(anno, mese, 1) - timedelta(days=1)
+    if mese == 12:
+        successivo = date(anno + 1, 1, 1)
+    else:
+        successivo = date(anno, mese + 1, 1)
+
+    tastiera.append([
+        InlineKeyboardButton(
+            "⬅️",
+            callback_data=f"m|{precedente.year}|{precedente.month}"
+        ),
+        InlineKeyboardButton(
+            "Oggi",
+            callback_data=f"m|{date.today().year}|{date.today().month}"
+        ),
+        InlineKeyboardButton(
+            "➡️",
+            callback_data=f"m|{successivo.year}|{successivo.month}"
+        )
+    ])
+
+    tastiera.append([
+        InlineKeyboardButton(
+            "📅 Settimanale",
+            callback_data=f"w|{(date.today() - timedelta(days=date.today().weekday())).isoformat()}"
+        )
+    ])
+
+    return testo, InlineKeyboardMarkup(tastiera)
+
+
+def vista_settimanale(lunedi):
+    testo = "📅 CALENDARIO SETTIMANALE\n\n"
+    testo += "🔵 Oggi   🟢 Regolare   🔴 Meno di 4 presenti\n"
+
+    tastiera = []
+
+    for i in range(7):
+        giorno = lunedi + timedelta(days=i)
+        presenti, _ = conteggio(giorno.isoformat())
+
+        if giorno == date.today():
+            simbolo = "🔵"
+        elif presenti < MIN_PRESENTI:
+            simbolo = "🔴"
+        else:
+            simbolo = "🟢"
+
+        nome_giorno = [
+            "Lunedì", "Martedì", "Mercoledì",
+            "Giovedì", "Venerdì", "Sabato", "Domenica"
+        ][i]
+
+        tastiera.append([
+            InlineKeyboardButton(
+                f"{simbolo} {nome_giorno} {giorno.strftime('%d/%m/%Y')}",
+                callback_data=f"d|{giorno.isoformat()}"
+            )
+        ])
+
+    precedente = lunedi - timedelta(days=7)
+    successivo = lunedi + timedelta(days=7)
+
+    tastiera.append([
+        InlineKeyboardButton(
+            "⬅️ Settimana precedente",
+            callback_data=f"w|{precedente.isoformat()}"
+        )
+    ])
+    tastiera.append([
+        InlineKeyboardButton(
+            "Settimana successiva ➡️",
+            callback_data=f"w|{successivo.isoformat()}"
+        )
+    ])
+    tastiera.append([
+        InlineKeyboardButton(
+            "📆 Calendario mensile",
+            callback_data=f"m|{date.today().year}|{date.today().month}"
+        )
+    ])
+
+    return testo, InlineKeyboardMarkup(tastiera)
 
 
 def testo_giorno(giorno):
     presenti, numero_assenti = conteggio(giorno)
-    if presenti < MIN_PRESENTI:
-        avviso = "🔴 ATTENZIONE: meno di 4 presenti!"
-    else:
-        avviso = "🟢 Presenza regolare"
+    totale = len(lavoratori())
 
-    elenco = lavoratori()
-    assenti_ids = [x[0] for x in assenti(giorno)]
+    data_giorno = date.fromisoformat(giorno)
+    indicatore = " 🔵 OGGI" if data_giorno == date.today() else ""
 
-    testo = (
-        f"📅 {giorno}\n\n"
-        f"👥 Presenti: {presenti}/{MAX_LAVORATORI}\n"
-        f"🏖 Assenti: {numero_assenti}\n"
-        f"{avviso}\n\n"
-        "Seleziona un lavoratore per modificare la sua assenza:"
+    avviso = (
+        "🔴 ATTENZIONE: meno di 4 presenti!"
+        if presenti < MIN_PRESENTI
+        else "🟢 Presenza regolare"
     )
 
+    testo = (
+        f"📅 {giorno}{indicatore}\n\n"
+        f"👥 Presenti: {presenti}/{totale}\n"
+        f"🏖 Assenti: {numero_assenti}\n"
+        f"{avviso}\n\n"
+        "Seleziona un lavoratore per modificare l'assenza:"
+    )
+
+    ids_assenti = [x[0] for x in assenti(giorno)]
     tastiera = []
-    for ident, nome in elenco:
-        simbolo = "🏖" if ident in assenti_ids else "🟢"
+
+    for ident, nome in lavoratori():
+        simbolo = "🏖" if ident in ids_assenti else "🟢"
         tastiera.append([
             InlineKeyboardButton(
                 f"{simbolo} {nome}",
@@ -88,71 +220,9 @@ def testo_giorno(giorno):
         ])
 
     tastiera.append([
-        InlineKeyboardButton("⬅️ Torna al mese",
-                             callback_data=f"m|{int(giorno[:4])}|{int(giorno[5:7])}")
-    ])
-
-    return testo, InlineKeyboardMarkup(tastiera)
-
-
-def vista_mese(anno, mese):
-    giorni = calendar.monthcalendar(anno, mese)
-    nomi_mesi = [
-        "Gennaio", "Febbraio", "Marzo", "Aprile",
-        "Maggio", "Giugno", "Luglio", "Agosto",
-        "Settembre", "Ottobre", "Novembre", "Dicembre"
-    ]
-
-    testo = f"📅 CALENDARIO FERIE\n{nomi_mesi[mese-1]} {anno}\n\n"
-    testo += "🔴 = meno di 4 presenti\n"
-    testo += "🟢 = almeno 4 presenti\n\n"
-
-    tastiera = [
-        [
-            InlineKeyboardButton(g, callback_data="noop")
-            for g in ["L", "M", "M", "G", "V", "S", "D"]
-        ]
-    ]
-
-    for settimana in giorni:
-        riga = []
-        for numero in settimana:
-            if numero == 0:
-                riga.append(InlineKeyboardButton(" ", callback_data="noop"))
-            else:
-                giorno = f"{anno:04d}-{mese:02d}-{numero:02d}"
-                presenti, _ = conteggio(giorno)
-                simbolo = "🔴" if presenti < MIN_PRESENTI else "🟢"
-                riga.append(InlineKeyboardButton(
-                    f"{simbolo}{numero}",
-                    callback_data=f"d|{giorno}"
-                ))
-        tastiera.append(riga)
-
-    precedente = mese - 1
-    anno_prec = anno
-    if precedente == 0:
-        precedente = 12
-        anno_prec -= 1
-
-    successivo = mese + 1
-    anno_succ = anno
-    if successivo == 13:
-        successivo = 1
-        anno_succ += 1
-
-    tastiera.append([
         InlineKeyboardButton(
-            "⬅️",
-            callback_data=f"m|{anno_prec}|{precedente}"
-        ),
-        InlineKeyboardButton(
-            "Oggi",
-            callback_data=f"m|{date.today().year}|{date.today().month}"
-        ),
-        InlineKeyboardButton(
-            "➡️",
-            callback_data=f"m|{anno_succ}|{successivo}"
+            "⬅️ Torna al mese",
+            callback_data=f"m|{data_giorno.year}|{data_giorno.month}"
         )
     ])
 
@@ -160,9 +230,8 @@ def vista_mese(anno, mese):
 
 
 async def inizio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    anno = date.today().year
-    mese = date.today().month
-    testo, tastiera = vista_mese(anno, mese)
+    oggi = date.today()
+    testo, tastiera = vista_mese(oggi.year, oggi.month)
     await update.message.reply_text(testo, reply_markup=tastiera)
 
 
@@ -170,20 +239,24 @@ async def mese(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await inizio(update, context)
 
 
+async def settimana_comando(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    lunedi = date.today() - timedelta(days=date.today().weekday())
+    testo, tastiera = vista_settimanale(lunedi)
+    await update.message.reply_text(testo, reply_markup=tastiera)
+
+
 async def registrami(update: Update, context: ContextTypes.DEFAULT_TYPE):
     nome = " ".join(context.args).strip()
 
     if not nome:
         await update.message.reply_text(
-            "Usa il comando: /registrami Nome Cognome"
+            "Usa: /registrami Nome Cognome"
         )
         return
 
     elenco = lavoratori()
-
-    if any(n.lower() == nome.lower() for _, n in elenco):
-        await update.message.reply_text("Sei già registrato.")
-        return
 
     if len(elenco) >= MAX_LAVORATORI:
         await update.message.reply_text(
@@ -191,40 +264,107 @@ async def registrami(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if any(n.lower() == nome.lower() for _, n in elenco):
+        await update.message.reply_text("Nome già registrato.")
+        return
+
     try:
         with closing(sqlite3.connect(DB)) as db:
             db.execute(
-                "INSERT INTO lavoratori (nome) VALUES (?)",
-                (nome,)
+                "INSERT INTO lavoratori (nome) VALUES (?)", (nome,)
             )
             db.commit()
-        await update.message.reply_text(f"Registrato: {nome} ✅")
+        await update.message.reply_text(f"✅ Registrato: {nome}")
     except sqlite3.IntegrityError:
         await update.message.reply_text("Nome già presente.")
 
 
-async def settimana(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    oggi = date.today()
-    lunedi = oggi - timedelta(days=oggi.weekday())
+async def rinomina(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    testo = " ".join(context.args)
 
-    testo = "📅 CALENDARIO SETTIMANALE\n\n"
-    tastiera = []
+    if "|" not in testo:
+        await update.message.reply_text(
+            "Usa:\n/rinomina Vecchio Nome | Nuovo Nome"
+        )
+        return
 
-    for i in range(7):
-        giorno = lunedi + timedelta(days=i)
-        data_testo = giorno.isoformat()
-        presenti, _ = conteggio(data_testo)
-        simbolo = "🔴" if presenti < MIN_PRESENTI else "🟢"
+    vecchio, nuovo = [x.strip() for x in testo.split("|", 1)]
 
-        tastiera.append([
-            InlineKeyboardButton(
-                f"{simbolo} {giorno.strftime('%d/%m/%Y')}",
-                callback_data=f"d|{data_testo}"
+    if not vecchio or not nuovo:
+        await update.message.reply_text("Inserisci entrambi i nomi.")
+        return
+
+    with closing(sqlite3.connect(DB)) as db:
+        lavoratore = db.execute(
+            "SELECT id FROM lavoratori WHERE nome=? COLLATE NOCASE",
+            (vecchio,)
+        ).fetchone()
+
+        if not lavoratore:
+            await update.message.reply_text("Lavoratore non trovato.")
+            return
+
+        try:
+            db.execute(
+                "UPDATE lavoratori SET nome=? WHERE id=?",
+                (nuovo, lavoratore[0])
             )
-        ])
+            db.commit()
+            await update.message.reply_text(
+                f"✅ Nome modificato: {vecchio} → {nuovo}\n"
+                "Le ferie già inserite sono state conservate."
+            )
+        except sqlite3.IntegrityError:
+            await update.message.reply_text(
+                "Esiste già un lavoratore con questo nome."
+            )
+
+
+async def elimina(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    nome = " ".join(context.args).strip()
+
+    if not nome:
+        await update.message.reply_text(
+            "Usa: /elimina Nome Cognome"
+        )
+        return
+
+    with closing(sqlite3.connect(DB)) as db:
+        lavoratore = db.execute(
+            "SELECT id FROM lavoratori WHERE nome=? COLLATE NOCASE",
+            (nome,)
+        ).fetchone()
+
+        if not lavoratore:
+            await update.message.reply_text("Lavoratore non trovato.")
+            return
+
+        db.execute(
+            "DELETE FROM assenze WHERE lavoratore_id=?",
+            (lavoratore[0],)
+        )
+        db.execute(
+            "DELETE FROM lavoratori WHERE id=?",
+            (lavoratore[0],)
+        )
+        db.commit()
 
     await update.message.reply_text(
-        testo, reply_markup=InlineKeyboardMarkup(tastiera)
+        f"🗑 Lavoratore {nome} eliminato."
+    )
+
+
+async def aiuto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📋 COMANDI CALENDARIO FERIE\n\n"
+        "/inizia - calendario mensile\n"
+        "/mese - calendario mensile\n"
+        "/settimana - calendario settimanale\n"
+        "/registrami Nome Cognome - registra lavoratore\n"
+        "/rinomina Vecchio Nome | Nuovo Nome - modifica nome\n"
+        "/elimina Nome Cognome - elimina lavoratore\n"
+        "/aiuto - mostra i comandi\n\n"
+        "Tutti possono modificare le assenze di tutti."
     )
 
 
@@ -238,13 +378,27 @@ async def pulsanti(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if dati[0] == "m":
-        testo, tastiera = vista_mese(int(dati[1]), int(dati[2]))
-        await query.edit_message_text(testo, reply_markup=tastiera)
+        testo, tastiera = vista_mese(
+            int(dati[1]), int(dati[2])
+        )
+        await query.edit_message_text(
+            testo, reply_markup=tastiera
+        )
+        return
+
+    if dati[0] == "w":
+        lunedi = date.fromisoformat(dati[1])
+        testo, tastiera = vista_settimanale(lunedi)
+        await query.edit_message_text(
+            testo, reply_markup=tastiera
+        )
         return
 
     if dati[0] == "d":
         testo, tastiera = testo_giorno(dati[1])
-        await query.edit_message_text(testo, reply_markup=tastiera)
+        await query.edit_message_text(
+            testo, reply_markup=tastiera
+        )
         return
 
     if dati[0] == "t":
@@ -270,19 +424,9 @@ async def pulsanti(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.commit()
 
         testo, tastiera = testo_giorno(giorno)
-        await query.edit_message_text(testo, reply_markup=tastiera)
-
-
-async def aiuto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📋 COMANDI CALENDARIO FERIE\n\n"
-        "/inizia - apre il calendario mensile\n"
-        "/mese - mostra il mese corrente\n"
-        "/settimana - mostra la settimana corrente\n"
-        "/registrami Nome Cognome - registra un lavoratore\n"
-        "/aiuto - mostra questo messaggio\n\n"
-        "Tutti possono modificare le assenze di tutti."
-    )
+        await query.edit_message_text(
+            testo, reply_markup=tastiera
+        )
 
 
 def main():
@@ -293,8 +437,10 @@ def main():
     app.add_handler(CommandHandler("start", inizio))
     app.add_handler(CommandHandler("inizia", inizio))
     app.add_handler(CommandHandler("mese", mese))
-    app.add_handler(CommandHandler("settimana", settimana))
+    app.add_handler(CommandHandler("settimana", settimana_comando))
     app.add_handler(CommandHandler("registrami", registrami))
+    app.add_handler(CommandHandler("rinomina", rinomina))
+    app.add_handler(CommandHandler("elimina", elimina))
     app.add_handler(CommandHandler("aiuto", aiuto))
     app.add_handler(CallbackQueryHandler(pulsanti))
 
@@ -304,4 +450,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-  
+    
