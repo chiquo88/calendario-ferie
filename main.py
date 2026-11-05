@@ -46,7 +46,7 @@ if not DATA_DIR.exists():
 DB = DATA_DIR / "nucleo.db"
 
 # Cartella in cui conservare i manuali PDF
-DOCS_DIR = DATA_DIR / "documenti"
+DOCS_DIR = Path(__file__).resolve().parent / "documenti"
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
 
 WAITING_TEXT = 1
