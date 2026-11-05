@@ -1,453 +1,524 @@
 
 import os
 import sqlite3
-import calendar
-from datetime import date, timedelta
-from contextlib import closing
+from pathlib import Path
+from datetime import date, datetime
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, ContextTypes
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
 )
 
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-MIN_PRESENTI = 4
-MAX_LAVORATORI = 10
+# ==================================================
+# CONFIGURAZIONE
+# ==================================================
 
-DATA_DIR = "/data" if os.path.isdir("/data") else "."
-DB = os.path.join(DATA_DIR, "ferie.db")
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
+def read_ids(variable):
+    return {
+        int(x.strip())
+        for x in os.getenv(variable, "").split(",")
+        if x.strip().isdigit()
+    }
 
-def database():
-    with closing(sqlite3.connect(DB)) as db:
-        db.execute("""
-            CREATE TABLE IF NOT EXISTS lavoratori (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nome TEXT UNIQUE NOT NULL
-            )
+ALLOWED_USERS = read_ids("ALLOWED_USER_IDS")
+ADMIN_USERS = read_ids("ADMIN_USER_IDS")
+
+DATA_DIR = Path("/data")
+if not DATA_DIR.exists():
+    DATA_DIR = Path(".")
+
+DB = DATA_DIR / "nucleo.db"
+
+WAITING_TEXT = 1
+
+# ==================================================
+# DATABASE
+# ==================================================
+
+def db():
+    return sqlite3.connect(DB)
+
+def init_db():
+    with db() as con:
+        con.executescript("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT,
+            author TEXT,
+            created TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS equipment (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT,
+            author TEXT,
+            created TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS boats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT,
+            author TEXT,
+            created TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS dives (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT,
+            author TEXT,
+            created TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS presence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            name TEXT,
+            day TEXT,
+            status TEXT,
+            note TEXT,
+            UNIQUE(user_id, day)
+        );
         """)
-        db.execute("""
-            CREATE TABLE IF NOT EXISTS assenze (
-                giorno TEXT NOT NULL,
-                lavoratore_id INTEGER NOT NULL,
-                PRIMARY KEY (giorno, lavoratore_id)
-            )
-        """)
-        db.commit()
 
+# ==================================================
+# AUTORIZZAZIONE
+# ==================================================
 
-def lavoratori():
-    with closing(sqlite3.connect(DB)) as db:
-        return db.execute(
-            "SELECT id, nome FROM lavoratori ORDER BY nome"
-        ).fetchall()
+def authorized(user):
+    return user is not None and user.id in ALLOWED_USERS
 
+def admin(user):
+    return user is not None and user.id in ADMIN_USERS
 
-def assenti(giorno):
-    with closing(sqlite3.connect(DB)) as db:
-        return db.execute(
-            "SELECT lavoratore_id FROM assenze WHERE giorno=?",
-            (giorno,)
-        ).fetchall()
+async def deny(update):
+    if update.callback_query:
+        await update.callback_query.answer(
+            "Accesso non autorizzato.", show_alert=True
+        )
+    elif update.effective_message:
+        await update.effective_message.reply_text(
+            "⛔ Accesso riservato al personale autorizzato."
+        )
 
+# ==================================================
+# COMANDO ID
+# ==================================================
 
-def conteggio(giorno):
-    totale = len(lavoratori())
-    numero_assenti = len(assenti(giorno))
-    return max(0, totale - numero_assenti), numero_assenti
-
-
-def vista_mese(anno, mese):
-    nomi_mesi = [
-        "Gennaio", "Febbraio", "Marzo", "Aprile",
-        "Maggio", "Giugno", "Luglio", "Agosto",
-        "Settembre", "Ottobre", "Novembre", "Dicembre"
-    ]
-
-    testo = (
-        f"📅 CALENDARIO FERIE\n"
-        f"{nomi_mesi[mese - 1]} {anno}\n\n"
-        "🔵 Oggi   🟢 Regolare   🔴 Meno di 4 presenti\n"
+async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    await update.message.reply_text(
+        f"Il tuo ID Telegram è:\n\n`{user.id}`",
+        parse_mode="Markdown"
     )
 
-    tastiera = [[
-        InlineKeyboardButton(g, callback_data="noop")
-        for g in ["L", "M", "M", "G", "V", "S", "D"]
-    ]]
+# ==================================================
+# MENU PRINCIPALE
+# ==================================================
 
-    for settimana in calendar.monthcalendar(anno, mese):
-        riga = []
-        for numero in settimana:
-            if numero == 0:
-                riga.append(
-                    InlineKeyboardButton(" ", callback_data="noop")
-                )
-                continue
+def main_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📅 Calendario", callback_data="calendar"),
+            InlineKeyboardButton("👥 Presenze", callback_data="presence")
+        ],
+        [
+            InlineKeyboardButton("🚤 Mezzi nautici", callback_data="boats"),
+            InlineKeyboardButton("🤿 Attrezzature", callback_data="equipment")
+        ],
+        [
+            InlineKeyboardButton("📋 Attività", callback_data="tasks"),
+            InlineKeyboardButton("🌊 Dive Log", callback_data="dives")
+        ],
+        [
+            InlineKeyboardButton("📊 Statistiche", callback_data="stats")
+        ],
+        [
+            InlineKeyboardButton("🌐 Meteo marino", url="https://www.windy.com/")
+        ],
+        [
+            InlineKeyboardButton("➕ Inserisci informazioni", callback_data="addmenu")
+        ]
+    ])
 
-            giorno = date(anno, mese, numero)
-            presenti, _ = conteggio(giorno.isoformat())
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not authorized(update.effective_user):
+        await deny(update)
+        return
 
-            if giorno == date.today():
-                simbolo = "🔵"
-            elif presenti < MIN_PRESENTI:
-                simbolo = "🔴"
-            else:
-                simbolo = "🟢"
+    await update.message.reply_text(
+        "🤿 NUCLEO BOT\n"
+        "Assistente digitale del Nucleo Sommozzatori.\n\n"
+        "Seleziona una funzione:",
+        reply_markup=main_keyboard()
+    )
 
-            riga.append(InlineKeyboardButton(
-                f"{simbolo}{numero}",
-                callback_data=f"d|{giorno.isoformat()}"
-            ))
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not authorized(update.effective_user):
+        await deny(update)
+        return
 
-        tastiera.append(riga)
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text(
+        "🤿 MENU PRINCIPALE",
+        reply_markup=main_keyboard()
+    )
 
-    precedente = date(anno, mese, 1) - timedelta(days=1)
-    if mese == 12:
-        successivo = date(anno + 1, 1, 1)
+# ==================================================
+# VISUALIZZAZIONE DATI
+# ==================================================
+
+TABLES = {
+    "tasks": ("Attività", "tasks"),
+    "equipment": ("Attrezzature", "equipment"),
+    "boats": ("Mezzi nautici", "boats"),
+    "dives": ("Dive Log", "dives")
+}
+
+async def show_list(update, kind):
+    title, table = TABLES[kind]
+
+    with db() as con:
+        rows = con.execute(
+            f"SELECT id, text, author, created FROM {table} "
+            "ORDER BY id DESC LIMIT 30"
+        ).fetchall()
+
+    if not rows:
+        result = f"📂 {title}\n\nNessun elemento registrato."
     else:
-        successivo = date(anno, mese + 1, 1)
-
-    tastiera.append([
-        InlineKeyboardButton(
-            "⬅️",
-            callback_data=f"m|{precedente.year}|{precedente.month}"
-        ),
-        InlineKeyboardButton(
-            "Oggi",
-            callback_data=f"m|{date.today().year}|{date.today().month}"
-        ),
-        InlineKeyboardButton(
-            "➡️",
-            callback_data=f"m|{successivo.year}|{successivo.month}"
-        )
-    ])
-
-    tastiera.append([
-        InlineKeyboardButton(
-            "📅 Settimanale",
-            callback_data=f"w|{(date.today() - timedelta(days=date.today().weekday())).isoformat()}"
-        )
-    ])
-
-    return testo, InlineKeyboardMarkup(tastiera)
-
-
-def vista_settimanale(lunedi):
-    testo = "📅 CALENDARIO SETTIMANALE\n\n"
-    testo += "🔵 Oggi   🟢 Regolare   🔴 Meno di 4 presenti\n"
-
-    tastiera = []
-
-    for i in range(7):
-        giorno = lunedi + timedelta(days=i)
-        presenti, _ = conteggio(giorno.isoformat())
-
-        if giorno == date.today():
-            simbolo = "🔵"
-        elif presenti < MIN_PRESENTI:
-            simbolo = "🔴"
-        else:
-            simbolo = "🟢"
-
-        nome_giorno = [
-            "Lunedì", "Martedì", "Mercoledì",
-            "Giovedì", "Venerdì", "Sabato", "Domenica"
-        ][i]
-
-        tastiera.append([
-            InlineKeyboardButton(
-                f"{simbolo} {nome_giorno} {giorno.strftime('%d/%m/%Y')}",
-                callback_data=f"d|{giorno.isoformat()}"
+        result = f"📂 {title}\n\n"
+        for item in rows:
+            result += (
+                f"#{item[0]} - {item[1]}\n"
+                f"👤 {item[2]} | {item[3]}\n\n"
             )
-        ])
 
-    precedente = lunedi - timedelta(days=7)
-    successivo = lunedi + timedelta(days=7)
+    await update.callback_query.message.reply_text(result)
 
-    tastiera.append([
-        InlineKeyboardButton(
-            "⬅️ Settimana precedente",
-            callback_data=f"w|{precedente.isoformat()}"
-        )
-    ])
-    tastiera.append([
-        InlineKeyboardButton(
-            "Settimana successiva ➡️",
-            callback_data=f"w|{successivo.isoformat()}"
-        )
-    ])
-    tastiera.append([
-        InlineKeyboardButton(
-            "📆 Calendario mensile",
-            callback_data=f"m|{date.today().year}|{date.today().month}"
-        )
-    ])
+# ==================================================
+# PRESENZE
+# ==================================================
 
-    return testo, InlineKeyboardMarkup(tastiera)
+async def show_presence(update):
+    today = date.today().isoformat()
 
+    with db() as con:
+        rows = con.execute(
+            "SELECT name, status, note FROM presence "
+            "WHERE day=? ORDER BY name",
+            (today,)
+        ).fetchall()
 
-def testo_giorno(giorno):
-    presenti, numero_assenti = conteggio(giorno)
-    totale = len(lavoratori())
+    result = f"👥 PRESENZE - {today}\n\n"
 
-    data_giorno = date.fromisoformat(giorno)
-    indicatore = " 🔵 OGGI" if data_giorno == date.today() else ""
+    if not rows:
+        result += "Nessuna disponibilità registrata."
+    else:
+        for name, status, note in rows:
+            result += f"• {name}: {status}"
+            if note:
+                result += f" ({note})"
+            result += "\n"
 
-    avviso = (
-        "🔴 ATTENZIONE: meno di 4 presenti!"
-        if presenti < MIN_PRESENTI
-        else "🟢 Presenza regolare"
+    result += (
+        "\n\nPer registrarti usa:\n"
+        "/presenza 2026-11-06 disponibile Nota"
     )
 
-    testo = (
-        f"📅 {giorno}{indicatore}\n\n"
-        f"👥 Presenti: {presenti}/{totale}\n"
-        f"🏖 Assenti: {numero_assenti}\n"
-        f"{avviso}\n\n"
-        "Seleziona un lavoratore per modificare l'assenza:"
-    )
+    await update.callback_query.message.reply_text(result)
 
-    ids_assenti = [x[0] for x in assenti(giorno)]
-    tastiera = []
-
-    for ident, nome in lavoratori():
-        simbolo = "🏖" if ident in ids_assenti else "🟢"
-        tastiera.append([
-            InlineKeyboardButton(
-                f"{simbolo} {nome}",
-                callback_data=f"t|{giorno}|{ident}"
-            )
-        ])
-
-    tastiera.append([
-        InlineKeyboardButton(
-            "⬅️ Torna al mese",
-            callback_data=f"m|{data_giorno.year}|{data_giorno.month}"
-        )
-    ])
-
-    return testo, InlineKeyboardMarkup(tastiera)
-
-
-async def inizio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    oggi = date.today()
-    testo, tastiera = vista_mese(oggi.year, oggi.month)
-    await update.message.reply_text(testo, reply_markup=tastiera)
-
-
-async def mese(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await inizio(update, context)
-
-
-async def settimana_comando(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-):
-    lunedi = date.today() - timedelta(days=date.today().weekday())
-    testo, tastiera = vista_settimanale(lunedi)
-    await update.message.reply_text(testo, reply_markup=tastiera)
-
-
-async def registrami(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    nome = " ".join(context.args).strip()
-
-    if not nome:
-        await update.message.reply_text(
-            "Usa: /registrami Nome Cognome"
-        )
+async def set_presence(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not authorized(update.effective_user):
+        await deny(update)
         return
 
-    elenco = lavoratori()
-
-    if len(elenco) >= MAX_LAVORATORI:
+    if len(context.args) < 2:
         await update.message.reply_text(
-            "Sono già stati registrati 10 lavoratori."
+            "Formato:\n"
+            "/presenza AAAA-MM-GG disponibile [nota]\n\n"
+            "Stati ammessi: disponibile, assente, servizio"
         )
-        return
-
-    if any(n.lower() == nome.lower() for _, n in elenco):
-        await update.message.reply_text("Nome già registrato.")
         return
 
     try:
-        with closing(sqlite3.connect(DB)) as db:
-            db.execute(
-                "INSERT INTO lavoratori (nome) VALUES (?)", (nome,)
-            )
-            db.commit()
-        await update.message.reply_text(f"✅ Registrato: {nome}")
-    except sqlite3.IntegrityError:
-        await update.message.reply_text("Nome già presente.")
+        day = datetime.strptime(
+            context.args[0], "%Y-%m-%d"
+        ).date().isoformat()
 
+        status = context.args[1].lower()
 
-async def rinomina(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    testo = " ".join(context.args)
+        if status not in ("disponibile", "assente", "servizio"):
+            raise ValueError()
 
-    if "|" not in testo:
+        note = " ".join(context.args[2:])
+        user = update.effective_user
+        name = user.full_name
+
+        with db() as con:
+            con.execute("""
+                INSERT INTO presence
+                (user_id, name, day, status, note)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, day)
+                DO UPDATE SET
+                    name=excluded.name,
+                    status=excluded.status,
+                    note=excluded.note
+            """, (user.id, name, day, status, note))
+
         await update.message.reply_text(
-            "Usa:\n/rinomina Vecchio Nome | Nuovo Nome"
+            f"✅ Presenza registrata per {day}: {status}"
         )
-        return
 
-    vecchio, nuovo = [x.strip() for x in testo.split("|", 1)]
-
-    if not vecchio or not nuovo:
-        await update.message.reply_text("Inserisci entrambi i nomi.")
-        return
-
-    with closing(sqlite3.connect(DB)) as db:
-        lavoratore = db.execute(
-            "SELECT id FROM lavoratori WHERE nome=? COLLATE NOCASE",
-            (vecchio,)
-        ).fetchone()
-
-        if not lavoratore:
-            await update.message.reply_text("Lavoratore non trovato.")
-            return
-
-        try:
-            db.execute(
-                "UPDATE lavoratori SET nome=? WHERE id=?",
-                (nuovo, lavoratore[0])
-            )
-            db.commit()
-            await update.message.reply_text(
-                f"✅ Nome modificato: {vecchio} → {nuovo}\n"
-                "Le ferie già inserite sono state conservate."
-            )
-        except sqlite3.IntegrityError:
-            await update.message.reply_text(
-                "Esiste già un lavoratore con questo nome."
-            )
-
-
-async def elimina(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    nome = " ".join(context.args).strip()
-
-    if not nome:
+    except ValueError:
         await update.message.reply_text(
-            "Usa: /elimina Nome Cognome"
+            "Data o stato non valido. Controlla il formato."
         )
-        return
 
-    with closing(sqlite3.connect(DB)) as db:
-        lavoratore = db.execute(
-            "SELECT id FROM lavoratori WHERE nome=? COLLATE NOCASE",
-            (nome,)
-        ).fetchone()
+# ==================================================
+# INSERIMENTO INFORMAZIONI
+# ==================================================
 
-        if not lavoratore:
-            await update.message.reply_text("Lavoratore non trovato.")
-            return
+async def add_menu(update):
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📋 Nuova attività", callback_data="add_tasks")
+        ],
+        [
+            InlineKeyboardButton("🤿 Nuova attrezzatura", callback_data="add_equipment")
+        ],
+        [
+            InlineKeyboardButton("🚤 Nuovo mezzo", callback_data="add_boats")
+        ],
+        [
+            InlineKeyboardButton("🌊 Nuova immersione", callback_data="add_dives")
+        ],
+        [
+            InlineKeyboardButton("👥 Registra presenza", callback_data="add_presence")
+        ],
+        [
+            InlineKeyboardButton("↩️ Menu", callback_data="menu")
+        ]
+    ])
 
-        db.execute(
-            "DELETE FROM assenze WHERE lavoratore_id=?",
-            (lavoratore[0],)
-        )
-        db.execute(
-            "DELETE FROM lavoratori WHERE id=?",
-            (lavoratore[0],)
-        )
-        db.commit()
-
-    await update.message.reply_text(
-        f"🗑 Lavoratore {nome} eliminato."
+    await update.callback_query.message.reply_text(
+        "➕ COSA VUOI INSERIRE?",
+        reply_markup=keyboard
     )
 
+async def begin_add(update, context):
+    if not authorized(update.effective_user):
+        await deny(update)
+        return ConversationHandler.END
 
-async def aiuto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📋 COMANDI CALENDARIO FERIE\n\n"
-        "/inizia - calendario mensile\n"
-        "/mese - calendario mensile\n"
-        "/settimana - calendario settimanale\n"
-        "/registrami Nome Cognome - registra lavoratore\n"
-        "/rinomina Vecchio Nome | Nuovo Nome - modifica nome\n"
-        "/elimina Nome Cognome - elimina lavoratore\n"
-        "/aiuto - mostra i comandi\n\n"
-        "Tutti possono modificare le assenze di tutti."
-    )
-
-
-async def pulsanti(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    dati = query.data.split("|")
+    kind = query.data.replace("add_", "")
+    context.user_data["kind"] = kind
 
-    if dati[0] == "noop":
+    prompts = {
+        "tasks": "Descrivi l'attività da registrare:",
+        "equipment": "Inserisci attrezzatura, matricola e stato:",
+        "boats": "Inserisci mezzo, caratteristiche e stato:",
+        "dives": "Inserisci data, luogo e dettagli dell'immersione:",
+        "presence": (
+            "Inserisci la presenza nel formato:\n"
+            "AAAA-MM-GG | disponibile/assente/servizio | nota"
+        )
+    }
+
+    await query.message.reply_text(prompts[kind])
+    return WAITING_TEXT
+
+async def save_item(update, context):
+    if not authorized(update.effective_user):
+        await deny(update)
+        return ConversationHandler.END
+
+    text = update.message.text.strip()
+    kind = context.user_data.get("kind")
+    user = update.effective_user
+    author = user.full_name
+    created = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    if not text:
+        await update.message.reply_text("Inserisci un testo valido.")
+        return WAITING_TEXT
+
+    if kind == "presence":
+        try:
+            parts = [x.strip() for x in text.split("|")]
+            if len(parts) < 2:
+                raise ValueError()
+
+            day = datetime.strptime(parts[0], "%Y-%m-%d").date().isoformat()
+            status = parts[1].lower()
+            note = parts[2] if len(parts) > 2 else ""
+
+            if status not in ("disponibile", "assente", "servizio"):
+                raise ValueError()
+
+            with db() as con:
+                con.execute("""
+                    INSERT INTO presence
+                    (user_id, name, day, status, note)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, day)
+                    DO UPDATE SET
+                        name=excluded.name,
+                        status=excluded.status,
+                        note=excluded.note
+                """, (user.id, author, day, status, note))
+
+            await update.message.reply_text("✅ Presenza salvata!")
+        except ValueError:
+            await update.message.reply_text(
+                "Formato non valido. Riprova con:\n"
+                "2026-11-06 | disponibile | nota"
+            )
+            return WAITING_TEXT
+
+    else:
+        table = kind
+        with db() as con:
+            con.execute(
+                f"INSERT INTO {table} (text, author, created) "
+                "VALUES (?, ?, ?)",
+                (text, author, created)
+            )
+
+        await update.message.reply_text(
+            "✅ Informazione registrata correttamente!"
+        )
+
+    context.user_data.clear()
+    await update.message.reply_text(
+        "🤿 Torna al menu principale:",
+        reply_markup=main_keyboard()
+    )
+
+    return ConversationHandler.END
+
+async def cancel(update, context):
+    context.user_data.clear()
+    await update.message.reply_text(
+        "Operazione annullata.",
+        reply_markup=main_keyboard()
+    )
+    return ConversationHandler.END
+
+# ==================================================
+# STATISTICHE
+# ==================================================
+
+async def show_stats(update):
+    with db() as con:
+        tasks = con.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        equipment = con.execute("SELECT COUNT(*) FROM equipment").fetchone()[0]
+        boats = con.execute("SELECT COUNT(*) FROM boats").fetchone()[0]
+        dives = con.execute("SELECT COUNT(*) FROM dives").fetchone()[0]
+        people = con.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM presence"
+        ).fetchone()[0]
+
+    text = (
+        "📊 STATISTICHE NUCLEO\n\n"
+        f"📋 Attività registrate: {tasks}\n"
+        f"🤿 Attrezzature registrate: {equipment}\n"
+        f"🚤 Mezzi registrati: {boats}\n"
+        f"🌊 Immersioni registrate: {dives}\n"
+        f"👥 Componenti con presenze registrate: {people}\n"
+    )
+
+    await update.callback_query.message.reply_text(text)
+
+# ==================================================
+# GESTIONE PULSANTI
+# ==================================================
+
+async def buttons(update, context):
+    if not authorized(update.effective_user):
+        await deny(update)
         return
 
-    if dati[0] == "m":
-        testo, tastiera = vista_mese(
-            int(dati[1]), int(dati[2])
-        )
-        await query.edit_message_text(
-            testo, reply_markup=tastiera
-        )
-        return
+    query = update.callback_query
+    await query.answer()
 
-    if dati[0] == "w":
-        lunedi = date.fromisoformat(dati[1])
-        testo, tastiera = vista_settimanale(lunedi)
-        await query.edit_message_text(
-            testo, reply_markup=tastiera
-        )
-        return
+    action = query.data
 
-    if dati[0] == "d":
-        testo, tastiera = testo_giorno(dati[1])
-        await query.edit_message_text(
-            testo, reply_markup=tastiera
-        )
-        return
-
-    if dati[0] == "t":
-        giorno = dati[1]
-        ident = int(dati[2])
-
-        with closing(sqlite3.connect(DB)) as db:
-            esiste = db.execute(
-                "SELECT 1 FROM assenze WHERE giorno=? AND lavoratore_id=?",
-                (giorno, ident)
-            ).fetchone()
-
-            if esiste:
-                db.execute(
-                    "DELETE FROM assenze WHERE giorno=? AND lavoratore_id=?",
-                    (giorno, ident)
-                )
-            else:
-                db.execute(
-                    "INSERT INTO assenze VALUES (?, ?)",
-                    (giorno, ident)
-                )
-            db.commit()
-
-        testo, tastiera = testo_giorno(giorno)
-        await query.edit_message_text(
-            testo, reply_markup=tastiera
+    if action == "menu":
+        await query.message.reply_text(
+            "🤿 MENU PRINCIPALE",
+            reply_markup=main_keyboard()
         )
 
+    elif action == "addmenu":
+        await add_menu(update)
+
+    elif action == "presence":
+        await show_presence(update)
+
+    elif action == "stats":
+        await show_stats(update)
+
+    elif action in TABLES:
+        await show_list(update, action)
+
+# ==================================================
+# AVVIO
+# ==================================================
 
 def main():
-    database()
+    if not TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN non configurato.")
+
+    init_db()
+
+    if not ALLOWED_USERS:
+        print("ATTENZIONE: nessun utente autorizzato configurato.")
 
     app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", inizio))
-    app.add_handler(CommandHandler("inizia", inizio))
-    app.add_handler(CommandHandler("mese", mese))
-    app.add_handler(CommandHandler("settimana", settimana_comando))
-    app.add_handler(CommandHandler("registrami", registrami))
-    app.add_handler(CommandHandler("rinomina", rinomina))
-    app.add_handler(CommandHandler("elimina", elimina))
-    app.add_handler(CommandHandler("aiuto", aiuto))
-    app.add_handler(CallbackQueryHandler(pulsanti))
+    app.add_handler(CommandHandler("id", get_id))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("presenza", set_presence))
 
-    print("Bot calendario ferie avviato!")
+    add_conversation = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(
+                begin_add,
+                pattern=r"^add_(tasks|equipment|boats|dives|presence)$"
+            )
+        ],
+        states={
+            WAITING_TEXT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_item)
+            ]
+        },
+        fallbacks=[
+            CommandHandler("annulla", cancel)
+        ],
+        allow_reentry=True
+    )
+
+    app.add_handler(add_conversation)
+    app.add_handler(CallbackQueryHandler(buttons))
+
+    print("NUCLEO BOT avviato.")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
-    
