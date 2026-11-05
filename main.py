@@ -1,12 +1,8 @@
 
 import os
-import re
 import sqlite3
-import unicodedata
 from pathlib import Path
 from datetime import datetime
-
-from pypdf import PdfReader
 
 from telegram import (
     Update,
@@ -45,12 +41,13 @@ if not DATA_DIR.exists():
 
 DB = DATA_DIR / "nucleo.db"
 
-# Cartella in cui conservare i manuali PDF
+# Cartella dei manuali PDF
 DOCS_DIR = Path(__file__).resolve().parent / "documenti"
-DOCS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Nome esatto del PDF
+PDF_NAME = "SMM   6 Norme per le immersioni - ediz. ott 2017.pdf"
 
 WAITING_TEXT = 1
-AI_WAITING = 2
 
 # ==================================================
 # DATABASE
@@ -183,6 +180,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ==================================================
+# APERTURA PDF SMM 6
+# ==================================================
+
+async def assistant_start(update, context):
+    if not authorized(update.effective_user):
+        await deny(update)
+        return
+
+    query = update.callback_query
+    await query.answer()
+
+    pdf_path = DOCS_DIR / PDF_NAME
+
+    if not pdf_path.is_file():
+        await query.message.reply_text(
+            "⚠️ PDF non trovato.\n\n"
+            "Verifica che il file sia presente nella cartella "
+            "'documenti' accanto a main.py e che il nome sia corretto."
+        )
+        return
+
+    try:
+        with pdf_path.open("rb") as pdf:
+            await query.message.reply_document(
+                document=pdf,
+                filename="SMM 6 - Norme per le immersioni.pdf",
+                caption="📘 SMM 6 - Norme per le immersioni"
+            )
+    except Exception as error:
+        print(f"Errore invio PDF: {error}")
+        await query.message.reply_text(
+            "❌ Non è stato possibile inviare il PDF. Riprova più tardi."
+        )
+
+# ==================================================
 # VISUALIZZAZIONE DATI
 # ==================================================
 
@@ -213,191 +245,6 @@ async def show_list(update, kind):
             )
 
     await update.callback_query.message.reply_text(result)
-
-# ==================================================
-# ASSISTENTE DOCUMENTALE
-# ==================================================
-
-# Parole comuni da ignorare durante la ricerca
-STOPWORDS = {
-    "che", "chi", "come", "cosa", "quale", "quali",
-    "quando", "dove", "perche", "perché", "sono",
-    "della", "delle", "degli", "dello", "dell",
-    "dalla", "dalle", "dagli", "nella", "nelle",
-    "negli", "nello", "alla", "alle", "allo",
-    "agli", "con", "per", "tra", "fra", "una",
-    "uno", "gli", "dei", "del", "dai", "dal",
-    "non", "nel", "nei", "sul", "sulla", "sulle",
-    "anche", "deve", "devono", "puo", "può",
-    "possono", "essere", "avere", "sono", "si",
-    "il", "lo", "la", "i", "le", "e", "a", "da",
-    "di", "in", "un", "ed", "o", "al", "ad"
-}
-
-def normalize(text):
-    text = unicodedata.normalize("NFKD", text.lower())
-    text = "".join(
-        c for c in text if not unicodedata.combining(c)
-    )
-    return text
-
-def query_terms(query):
-    words = re.findall(r"[a-z0-9]{3,}", normalize(query))
-    return [w for w in words if w not in STOPWORDS]
-
-def extract_excerpt(text, terms, max_chars=1100):
-    clean = re.sub(r"\s+", " ", text).strip()
-
-    if len(clean) <= max_chars:
-        return clean
-
-    normalized = normalize(clean)
-    positions = [
-        normalized.find(term)
-        for term in terms
-        if normalized.find(term) >= 0
-    ]
-
-    if not positions:
-        return clean[:max_chars] + "..."
-
-    start = max(0, min(positions) - 250)
-    end = min(len(clean), start + max_chars)
-
-    excerpt = clean[start:end]
-
-    if start > 0:
-        excerpt = "..." + excerpt
-    if end < len(clean):
-        excerpt += "..."
-
-    return excerpt
-
-def search_documents(question):
-    terms = query_terms(question)
-
-    if not terms:
-        return [], 0
-
-    results = []
-    pdf_files = list(DOCS_DIR.rglob("*.pdf"))
-
-    for pdf_path in pdf_files:
-        try:
-            reader = PdfReader(str(pdf_path))
-
-            for page_number, page in enumerate(reader.pages, start=1):
-                text = page.extract_text() or ""
-
-                if not text.strip():
-                    continue
-
-                normalized = normalize(text)
-
-                score = sum(
-                    normalized.count(term)
-                    for term in terms
-                )
-
-                if score > 0:
-                    results.append({
-                        "file": pdf_path.name,
-                        "page": page_number,
-                        "score": score,
-                        "text": extract_excerpt(text, terms)
-                    })
-
-        except Exception as error:
-            print(
-                f"Errore lettura PDF {pdf_path.name}: {error}"
-            )
-
-    results.sort(
-        key=lambda item: item["score"],
-        reverse=True
-    )
-
-    return results[:4], len(pdf_files)
-
-async def assistant_start(update, context):
-    if not authorized(update.effective_user):
-        await deny(update)
-        return ConversationHandler.END
-
-    query = update.callback_query
-    await query.answer()
-
-    context.user_data["assistant_active"] = True
-
-    await query.message.reply_text(
-        "🤖 ASSISTENTE DOCUMENTALE\n\n"
-        "Scrivi la tua domanda sui manuali e sulle disposizioni "
-        "caricate nell'archivio.\n\n"
-        "Indicherò il documento e la pagina dei passaggi trovati.\n\n"
-        "Per uscire scrivi /annulla."
-    )
-
-    return AI_WAITING
-
-async def assistant_search(update, context):
-    if not authorized(update.effective_user):
-        await deny(update)
-        return ConversationHandler.END
-
-    question = update.message.text.strip()
-
-    if not question:
-        await update.message.reply_text(
-            "Scrivi una domanda valida."
-        )
-        return AI_WAITING
-
-    results, total_pdfs = search_documents(question)
-
-    if total_pdfs == 0:
-        await update.message.reply_text(
-            "📂 L'archivio documentale è vuoto.\n\n"
-            "Occorre prima caricare i manuali PDF nella cartella "
-            "'documenti' del server."
-        )
-        return AI_WAITING
-
-    if not results:
-        await update.message.reply_text(
-            "Non ho trovato nei documenti disponibili un passaggio "
-            "che corrisponda alla domanda.\n\n"
-            "Prova a formulare la domanda utilizzando parole "
-            "più specifiche."
-        )
-        return AI_WAITING
-
-    response = (
-        "🔎 RISULTATI DELLA RICERCA\n\n"
-        "I seguenti estratti sono stati individuati nei documenti. "
-        "Non costituiscono una valutazione operativa.\n\n"
-    )
-
-    for index, item in enumerate(results, start=1):
-        response += (
-            f"📄 {item['file']}\n"
-            f"📌 Pagina {item['page']}\n"
-            f"{item['text']}\n\n"
-            "──────────────────\n\n"
-        )
-
-    response += (
-        "⚠️ Verifica sempre il testo integrale, l'edizione "
-        "del documento e le disposizioni vigenti. "
-        "La ricerca può non individuare tutti i passaggi pertinenti."
-    )
-
-    # Telegram accetta messaggi fino a 4096 caratteri
-    if len(response) > 4000:
-        response = response[:3950] + "\n\n[Risposta abbreviata]"
-
-    await update.message.reply_text(response)
-
-    return AI_WAITING
 
 # ==================================================
 # INSERIMENTO INFORMAZIONI
@@ -597,26 +444,12 @@ def main():
     app.add_handler(CommandHandler("id", get_id))
     app.add_handler(CommandHandler("start", start))
 
-    # Assistente documentale
-    assistant_conversation = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(
-                assistant_start,
-                pattern=r"^assistant$"
-            )
-        ],
-        states={
-            AI_WAITING: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    assistant_search
-                )
-            ]
-        },
-        fallbacks=[
-            CommandHandler("annulla", cancel)
-        ],
-        allow_reentry=True
+    # Apertura diretta del PDF
+    app.add_handler(
+        CallbackQueryHandler(
+            assistant_start,
+            pattern=r"^assistant$"
+        )
     )
 
     # Inserimento informazioni
@@ -641,7 +474,6 @@ def main():
         allow_reentry=True
     )
 
-    app.add_handler(assistant_conversation)
     app.add_handler(add_conversation)
     app.add_handler(CallbackQueryHandler(buttons))
 
@@ -650,4 +482,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
