@@ -50,13 +50,23 @@ if not DATA_DIR.exists():
 DB = DATA_DIR / "nucleo.db"
 
 DOCS_DIR = Path(__file__).resolve().parent / "documenti"
-PDF_NAME = "SMM   6 Norme per le immersioni - ediz. ott 2017.pdf"
+
+PDF_SMM6 = "SMM   6 Norme per le immersioni - ediz. ott 2017.pdf"
+
+PDF_RADIO_1 = "FS 3.2026 standardizzazione sigle radio.pdf"
+PDF_RADIO_2 = "NUOVE SIGLE RADIO FunzionariPDF_260304_073500.pdf"
 
 WAITING_TEXT = 1
 WAITING_DATE = 2
 EDIT_FIELD = 3
 EDIT_TEXT = 4
 EDIT_DATE = 5
+
+LOC_CATEGORY_NAME = 6
+LOC_SUBCATEGORY_NAME = 7
+LOC_PLACE_NAME = 8
+LOC_PLACE_ADDRESS = 9
+LOC_PLACE_PHONE = 10
 
 # ==================================================
 # COLLEGAMENTI ESTERNI
@@ -164,6 +174,39 @@ def init_db():
             sent_at TEXT,
             UNIQUE(notification_type, notification_key)
         );
+
+        CREATE TABLE IF NOT EXISTS location_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            created TEXT,
+            author TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS location_subcategories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category_id INTEGER NOT NULL,
+            name TEXT NOT NULL COLLATE NOCASE,
+            created TEXT,
+            author TEXT,
+            UNIQUE(category_id, name),
+            FOREIGN KEY(category_id)
+                REFERENCES location_categories(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS useful_places (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category_id INTEGER NOT NULL,
+            subcategory_id INTEGER,
+            name TEXT,
+            address TEXT,
+            phone TEXT,
+            created TEXT,
+            author TEXT,
+            FOREIGN KEY(category_id)
+                REFERENCES location_categories(id),
+            FOREIGN KEY(subcategory_id)
+                REFERENCES location_subcategories(id)
+        );
         """)
 
         add_column(con, "tasks", "event_date", "TEXT")
@@ -174,6 +217,24 @@ def init_db():
 
         add_column(con, "boats", "revision_date", "TEXT")
         add_column(con, "boats", "notified", "INTEGER DEFAULT 0")
+
+        # Categorie iniziali: vengono aggiunte solo se mancanti.
+        initial_categories = [
+            "Questura",
+            "Camera iperbarica",
+            "CNR",
+            "Ca' Foscari",
+            "Manutenzione attrezzature",
+            "Sport/TempoLibero",
+            "Magna/Bevi"
+        ]
+
+        for category in initial_categories:
+            con.execute(
+                "INSERT OR IGNORE INTO location_categories "
+                "(name, created, author) VALUES (?, ?, ?)",
+                (category, now_text(), "Sistema")
+            )
 
 
 # ==================================================
@@ -248,7 +309,18 @@ def main_keyboard():
                 "📅 Calendario", callback_data="calendar"
             ),
             InlineKeyboardButton(
-                "📘 Assistente documentale", callback_data="assistant"
+                "📘 SMM6_17'", callback_data="assistant"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📻 Sigle Radio", callback_data="radio_docs"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📍 Luoghi & Numeri Utili",
+                callback_data="locations"
             )
         ],
         [
@@ -296,8 +368,33 @@ def main_keyboard():
 
 
 # ==================================================
-# ASSISTENTE DOCUMENTALE
+# DOCUMENTI SMM6 E SIGLE RADIO
 # ==================================================
+
+async def send_pdf(query, filename, telegram_name, caption):
+    pdf_path = DOCS_DIR / filename
+
+    if not pdf_path.is_file():
+        await query.message.reply_text(
+            "⚠️ Documento non trovato.\n\n"
+            f"Verifica che il file sia presente nella cartella "
+            f"'documenti' accanto a main.py:\n\n{filename}"
+        )
+        return
+
+    try:
+        with pdf_path.open("rb") as pdf:
+            await query.message.reply_document(
+                document=pdf,
+                filename=telegram_name,
+                caption=caption
+            )
+    except Exception as error:
+        print(f"Errore invio PDF {filename}: {error}")
+        await query.message.reply_text(
+            "❌ Non è stato possibile inviare il documento."
+        )
+
 
 async def assistant_start(update, context):
     if not authorized(update.effective_user):
@@ -307,27 +404,63 @@ async def assistant_start(update, context):
     query = update.callback_query
     await query.answer()
 
-    pdf_path = DOCS_DIR / PDF_NAME
+    await send_pdf(
+        query,
+        PDF_SMM6,
+        "SMM6_17 - Norme per le immersioni.pdf",
+        "📘 SMM6_17' - Norme per le immersioni"
+    )
 
-    if not pdf_path.is_file():
-        await query.message.reply_text(
-            "⚠️ PDF non trovato.\n\n"
-            "Verifica che sia presente nella cartella "
-            "'documenti' accanto a main.py."
-        )
-        return
 
-    try:
-        with pdf_path.open("rb") as pdf:
-            await query.message.reply_document(
-                document=pdf,
-                filename="SMM 6 - Norme per le immersioni.pdf",
-                caption="📘 SMM 6 - Norme per le immersioni"
+async def radio_documents_menu(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "📻 FS 3.2026 - Standardizzazione sigle radio",
+                callback_data="radio_doc_1"
             )
-    except Exception as error:
-        print(f"Errore invio PDF: {error}")
-        await query.message.reply_text(
-            "❌ Non è stato possibile inviare il PDF."
+        ],
+        [
+            InlineKeyboardButton(
+                "📻 Nuove sigle radio Funzionari",
+                callback_data="radio_doc_2"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "↩️ Menu principale", callback_data="menu"
+            )
+        ]
+    ])
+
+    await query.message.reply_text(
+        "📻 SIGLE RADIO\n\n"
+        "Seleziona il documento da consultare o scaricare:",
+        reply_markup=keyboard
+    )
+
+
+async def send_radio_document(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "radio_doc_1":
+        await send_pdf(
+            query,
+            PDF_RADIO_1,
+            PDF_RADIO_1,
+            "📻 FS 3.2026 - Standardizzazione sigle radio"
+        )
+
+    elif query.data == "radio_doc_2":
+        await send_pdf(
+            query,
+            PDF_RADIO_2,
+            PDF_RADIO_2,
+            "📻 Nuove sigle radio Funzionari"
         )
 
 
@@ -366,7 +499,427 @@ def today_local():
 
 
 # ==================================================
-# VISUALIZZAZIONE ELENCHI
+# LUOGHI & NUMERI UTILI
+# ==================================================
+
+def location_menu_keyboard():
+    with db() as con:
+        categories = con.execute(
+            "SELECT id, name FROM location_categories "
+            "ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+
+    keyboard = []
+
+    for category_id, name in categories:
+        keyboard.append([
+            InlineKeyboardButton(
+                f"📂 {name}",
+                callback_data=f"loccat_{category_id}"
+            )
+        ])
+
+    keyboard.extend([
+        [
+            InlineKeyboardButton(
+                "➕ Aggiungi categoria",
+                callback_data="loc_add_category"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "↩️ Menu principale", callback_data="menu"
+            )
+        ]
+    ])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def show_locations_menu(query):
+    await query.message.reply_text(
+        "📍 LUOGHI & NUMERI UTILI\n\n"
+        "Seleziona una categoria oppure aggiungine una nuova:",
+        reply_markup=location_menu_keyboard()
+    )
+
+
+async def show_location_category(query, category_id):
+    with db() as con:
+        category = con.execute(
+            "SELECT name FROM location_categories WHERE id = ?",
+            (category_id,)
+        ).fetchone()
+
+        if not category:
+            await query.message.reply_text("Categoria non trovata.")
+            return
+
+        subcategories = con.execute(
+            "SELECT id, name FROM location_subcategories "
+            "WHERE category_id = ? ORDER BY name COLLATE NOCASE",
+            (category_id,)
+        ).fetchall()
+
+        places = con.execute(
+            "SELECT id, name, address, phone "
+            "FROM useful_places "
+            "WHERE category_id = ? AND subcategory_id IS NULL "
+            "ORDER BY name COLLATE NOCASE, id",
+            (category_id,)
+        ).fetchall()
+
+    keyboard = []
+
+    for sub_id, name in subcategories:
+        keyboard.append([
+            InlineKeyboardButton(
+                f"📁 {name}",
+                callback_data=f"locsub_{sub_id}"
+            )
+        ])
+
+    keyboard.extend([
+        [
+            InlineKeyboardButton(
+                "➕ Aggiungi sottocategoria",
+                callback_data=f"loc_add_subcat_{category_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "➕ Aggiungi luogo/numero",
+                callback_data=f"loc_add_place_cat_{category_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "↩️ Torna alle categorie",
+                callback_data="locations"
+            )
+        ]
+    ])
+
+    await query.message.reply_text(
+        f"📂 {category[0]}\n\n"
+        "Puoi consultare le voci già registrate, "
+        "entrare in una sottocategoria oppure aggiungere nuovi elementi.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+    await show_location_places(query, places)
+
+
+async def show_location_subcategory(query, subcategory_id):
+    with db() as con:
+        row = con.execute(
+            "SELECT name, category_id FROM location_subcategories "
+            "WHERE id = ?",
+            (subcategory_id,)
+        ).fetchone()
+
+        if not row:
+            await query.message.reply_text(
+                "Sottocategoria non trovata."
+            )
+            return
+
+        name, category_id = row
+
+        places = con.execute(
+            "SELECT id, name, address, phone "
+            "FROM useful_places "
+            "WHERE subcategory_id = ? "
+            "ORDER BY name COLLATE NOCASE, id",
+            (subcategory_id,)
+        ).fetchall()
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "➕ Aggiungi luogo/numero",
+                callback_data=f"loc_add_place_sub_{subcategory_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "↩️ Torna alla categoria",
+                callback_data=f"loccat_{category_id}"
+            )
+        ]
+    ])
+
+    await query.message.reply_text(
+        f"📁 {name}\n\n"
+        "Luoghi e numeri registrati:",
+        reply_markup=keyboard
+    )
+
+    await show_location_places(query, places)
+
+
+async def show_location_places(query, places):
+    if not places:
+        await query.message.reply_text(
+            "Nessun luogo o numero registrato."
+        )
+        return
+
+    for place_id, name, address, phone in places:
+        output = f"📌 {name or 'Nome non indicato'}\n"
+
+        if address:
+            output += f"📍 Indirizzo/posizione: {address}\n"
+
+        if phone:
+            output += f"☎️ Telefono: {phone}\n"
+
+        await query.message.reply_text(output)
+
+
+async def begin_location_add(update, context):
+    if not authorized(update.effective_user):
+        await deny(update)
+        return ConversationHandler.END
+
+    query = update.callback_query
+    await query.answer()
+
+    action = query.data
+
+    if action == "loc_add_category":
+        context.user_data["location_action"] = "category"
+
+        await query.message.reply_text(
+            "📂 Scrivi il nome della nuova categoria:"
+        )
+        return LOC_CATEGORY_NAME
+
+    if action.startswith("loc_add_subcat_"):
+        category_id = int(action.rsplit("_", 1)[1])
+
+        context.user_data["location_action"] = "subcategory"
+        context.user_data["location_category_id"] = category_id
+
+        await query.message.reply_text(
+            "📁 Scrivi il nome della nuova sottocategoria:"
+        )
+        return LOC_SUBCATEGORY_NAME
+
+    if action.startswith("loc_add_place_cat_"):
+        category_id = int(action.rsplit("_", 1)[1])
+
+        context.user_data["location_action"] = "place"
+        context.user_data["location_category_id"] = category_id
+        context.user_data["location_subcategory_id"] = None
+
+    elif action.startswith("loc_add_place_sub_"):
+        subcategory_id = int(action.rsplit("_", 1)[1])
+
+        with db() as con:
+            row = con.execute(
+                "SELECT category_id FROM location_subcategories "
+                "WHERE id = ?",
+                (subcategory_id,)
+            ).fetchone()
+
+        if not row:
+            await query.message.reply_text(
+                "Sottocategoria non trovata."
+            )
+            return ConversationHandler.END
+
+        context.user_data["location_action"] = "place"
+        context.user_data["location_category_id"] = row[0]
+        context.user_data["location_subcategory_id"] = subcategory_id
+
+    else:
+        return ConversationHandler.END
+
+    context.user_data["location_name"] = None
+    context.user_data["location_address"] = None
+    context.user_data["location_phone"] = None
+
+    await query.message.reply_text(
+        "📌 Inserisci il nome del luogo o del contatto.\n\n"
+        "Se non vuoi indicarlo, scrivi -"
+    )
+
+    return LOC_PLACE_NAME
+
+
+async def save_location_category(update, context):
+    if not authorized(update.effective_user):
+        await deny(update)
+        return ConversationHandler.END
+
+    name = update.message.text.strip()
+
+    if not name or name == "-":
+        await update.message.reply_text(
+            "Il nome della categoria è obbligatorio. Riprova:"
+        )
+        return LOC_CATEGORY_NAME
+
+    try:
+        with db() as con:
+            con.execute(
+                "INSERT INTO location_categories "
+                "(name, created, author) VALUES (?, ?, ?)",
+                (
+                    name,
+                    now_text(),
+                    update.effective_user.full_name
+                )
+            )
+
+        await update.message.reply_text(
+            f"✅ Categoria «{name}» aggiunta.",
+            reply_markup=location_menu_keyboard()
+        )
+
+    except sqlite3.IntegrityError:
+        await update.message.reply_text(
+            "⚠️ Questa categoria esiste già."
+        )
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def save_location_subcategory(update, context):
+    if not authorized(update.effective_user):
+        await deny(update)
+        return ConversationHandler.END
+
+    name = update.message.text.strip()
+    category_id = context.user_data.get("location_category_id")
+
+    if not name or name == "-":
+        await update.message.reply_text(
+            "Il nome della sottocategoria è obbligatorio. Riprova:"
+        )
+        return LOC_SUBCATEGORY_NAME
+
+    try:
+        with db() as con:
+            con.execute(
+                "INSERT INTO location_subcategories "
+                "(category_id, name, created, author) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    category_id,
+                    name,
+                    now_text(),
+                    update.effective_user.full_name
+                )
+            )
+
+        await update.message.reply_text(
+            f"✅ Sottocategoria «{name}» aggiunta."
+        )
+
+        await update.message.reply_text(
+            "Puoi tornare alla categoria per consultare le voci.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "↩️ Torna alla categoria",
+                    callback_data=f"loccat_{category_id}"
+                )
+            ]])
+        )
+
+    except sqlite3.IntegrityError:
+        await update.message.reply_text(
+            "⚠️ Questa sottocategoria esiste già."
+        )
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def save_location_place_name(update, context):
+    if not authorized(update.effective_user):
+        await deny(update)
+        return ConversationHandler.END
+
+    value = update.message.text.strip()
+    context.user_data["location_name"] = (
+        None if value == "-" else value
+    )
+
+    await update.message.reply_text(
+        "📍 Inserisci l'indirizzo o la posizione.\n\n"
+        "Puoi scrivere un indirizzo, una località o una descrizione. "
+        "Se non vuoi indicarlo, scrivi -"
+    )
+
+    return LOC_PLACE_ADDRESS
+
+
+async def save_location_place_address(update, context):
+    if not authorized(update.effective_user):
+        await deny(update)
+        return ConversationHandler.END
+
+    value = update.message.text.strip()
+    context.user_data["location_address"] = (
+        None if value == "-" else value
+    )
+
+    await update.message.reply_text(
+        "☎️ Inserisci il numero di telefono.\n\n"
+        "Se non vuoi indicarlo, scrivi -"
+    )
+
+    return LOC_PLACE_PHONE
+
+
+async def save_location_place_phone(update, context):
+    if not authorized(update.effective_user):
+        await deny(update)
+        return ConversationHandler.END
+
+    value = update.message.text.strip()
+    phone = None if value == "-" else value
+
+    category_id = context.user_data["location_category_id"]
+    subcategory_id = context.user_data.get(
+        "location_subcategory_id"
+    )
+
+    name = context.user_data.get("location_name")
+    address = context.user_data.get("location_address")
+
+    with db() as con:
+        con.execute(
+            "INSERT INTO useful_places "
+            "(category_id, subcategory_id, name, address, phone, "
+            "created, author) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                category_id,
+                subcategory_id,
+                name,
+                address,
+                phone,
+                now_text(),
+                update.effective_user.full_name
+            )
+        )
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "✅ Luogo/contatto registrato correttamente.\n\n"
+        "La scheda è ora consultabile da tutti gli utenti autorizzati.",
+        reply_markup=main_keyboard()
+    )
+
+    return ConversationHandler.END
+
+
+# ==================================================
+# VISUALIZZAZIONE ELENCHI ATTIVITÀ
 # ==================================================
 
 TABLES = {
@@ -655,6 +1208,10 @@ async def begin_edit(update, context):
 
 
 async def choose_edit_field(update, context):
+    if not authorized(update.effective_user):
+        await deny(update)
+        return ConversationHandler.END
+
     query = update.callback_query
     await query.answer()
 
@@ -987,9 +1544,6 @@ async def show_calendar_day(query, selected_date):
                 ("reminders", item_id, "🔔 Promemoria", text)
             )
 
-        # Le vecchie registrazioni di revisioni restano consultabili.
-        # Non generano più notifiche automatiche.
-
         rows = con.execute(
             "SELECT id, text FROM equipment WHERE revision_date = ?",
             (selected_date,)
@@ -1199,13 +1753,11 @@ async def process_morning_notifications(application):
     today = today_local()
     success = True
 
-    # Ogni giorno vengono controllati i promemoria.
     reminders_ok = await send_daily_reminders(application, today)
 
     if not reminders_ok:
         success = False
 
-    # Il riepilogo settimanale viene inviato soltanto il giovedì.
     if today.weekday() == 3:
         weekly_ok = await send_weekly_summary(application, today)
 
@@ -1235,7 +1787,6 @@ async def notification_loop(application):
                     next_run - datetime.now(TZ)
                 ).total_seconds()
             else:
-                # In caso di errore riprova dopo 5 minuti.
                 seconds = 300
 
         else:
@@ -1305,6 +1856,23 @@ async def buttons(update, context):
             today.year,
             today.month
         )
+
+    elif action == "locations":
+        await show_locations_menu(query)
+
+    elif action.startswith("loccat_"):
+        category_id = int(action.replace("loccat_", ""))
+        await show_location_category(query, category_id)
+
+    elif action.startswith("locsub_"):
+        subcategory_id = int(action.replace("locsub_", ""))
+        await show_location_subcategory(query, subcategory_id)
+
+    elif action == "radio_docs":
+        await radio_documents_menu(update, context)
+
+    elif action in ("radio_doc_1", "radio_doc_2"):
+        await send_radio_document(update, context)
 
     elif action.startswith("calday_"):
         selected_date = action.replace("calday_", "")
@@ -1441,8 +2009,60 @@ def main():
         allow_reentry=True
     )
 
+    location_conversation = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(
+                begin_location_add,
+                pattern=(
+                    r"^loc_add_category$|"
+                    r"^loc_add_subcat_\d+$|"
+                    r"^loc_add_place_cat_\d+$|"
+                    r"^loc_add_place_sub_\d+$"
+                )
+            )
+        ],
+        states={
+            LOC_CATEGORY_NAME: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    save_location_category
+                )
+            ],
+            LOC_SUBCATEGORY_NAME: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    save_location_subcategory
+                )
+            ],
+            LOC_PLACE_NAME: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    save_location_place_name
+                )
+            ],
+            LOC_PLACE_ADDRESS: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    save_location_place_address
+                )
+            ],
+            LOC_PLACE_PHONE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    save_location_place_phone
+                )
+            ]
+        },
+        fallbacks=[
+            CommandHandler("annulla", cancel)
+        ],
+        allow_reentry=True
+    )
+
     app.add_handler(add_conversation)
     app.add_handler(edit_conversation)
+    app.add_handler(location_conversation)
+
     app.add_handler(CallbackQueryHandler(buttons))
 
     print("NUCLEO BOT avviato.")
