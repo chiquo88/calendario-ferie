@@ -31,12 +31,14 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "").strip()
 TZ = ZoneInfo("Europe/Rome")
 
+
 def read_ids(variable):
     return {
         int(x.strip())
         for x in os.getenv(variable, "").split(",")
         if x.strip().isdigit()
     }
+
 
 ALLOWED_USERS = read_ids("ALLOWED_USER_IDS")
 ADMIN_USERS = read_ids("ADMIN_USER_IDS")
@@ -63,6 +65,7 @@ EDIT_DATE = 5
 def db():
     return sqlite3.connect(DB)
 
+
 def add_column(con, table, column, definition):
     columns = {
         row[1] for row in con.execute(
@@ -74,6 +77,7 @@ def add_column(con, table, column, definition):
         con.execute(
             f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
         )
+
 
 def init_db():
     with db() as con:
@@ -122,12 +126,14 @@ def init_db():
         add_column(con, "boats", "revision_date", "TEXT")
         add_column(con, "boats", "notified", "INTEGER DEFAULT 0")
 
+
 # ==================================================
 # AUTORIZZAZIONE
 # ==================================================
 
 def authorized(user):
     return user is not None and user.id in ALLOWED_USERS
+
 
 async def deny(update):
     if update.callback_query:
@@ -138,6 +144,7 @@ async def deny(update):
         await update.effective_message.reply_text(
             "⛔ Accesso riservato al personale autorizzato."
         )
+
 
 # ==================================================
 # COMANDI
@@ -150,6 +157,7 @@ async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Il tuo ID Telegram è:\n\n`{user.id}`",
         parse_mode="Markdown"
     )
+
 
 async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not authorized(update.effective_user):
@@ -165,6 +173,7 @@ async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not authorized(update.effective_user):
         await deny(update)
@@ -177,6 +186,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Seleziona una funzione:",
         reply_markup=main_keyboard()
     )
+
 
 # ==================================================
 # MENU PRINCIPALE
@@ -218,6 +228,7 @@ def main_keyboard():
         ]
     ])
 
+
 # ==================================================
 # ASSISTENTE DOCUMENTALE
 # ==================================================
@@ -253,6 +264,7 @@ async def assistant_start(update, context):
             "❌ Non è stato possibile inviare il PDF."
         )
 
+
 # ==================================================
 # DATE
 # ==================================================
@@ -268,6 +280,7 @@ def parse_date(value):
 
     return None
 
+
 def display_date(value):
     if not value:
         return "Non indicata"
@@ -277,11 +290,14 @@ def display_date(value):
     except ValueError:
         return value
 
+
 def now_text():
     return datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
 
+
 def today_local():
     return datetime.now(TZ).date()
+
 
 # ==================================================
 # VISUALIZZAZIONE ELENCHI
@@ -292,6 +308,7 @@ TABLES = {
     "equipment": ("Attrezzature", "equipment"),
     "boats": ("Mezzi nautici", "boats")
 }
+
 
 def item_description(kind, row):
     item_id, text, author, created, item_date = row
@@ -308,6 +325,7 @@ def item_description(kind, row):
         f"👤 {author or 'Non indicato'}\n"
         f"🕒 Inserito: {created or 'Non indicato'}"
     )
+
 
 async def show_list(update, kind):
     title, table = TABLES[kind]
@@ -347,6 +365,7 @@ async def show_list(update, kind):
             reply_markup=keyboard
         )
 
+
 # ==================================================
 # INSERIMENTO INFORMAZIONI
 # ==================================================
@@ -380,6 +399,7 @@ async def add_menu(update):
         reply_markup=keyboard
     )
 
+
 async def begin_add(update, context):
     if not authorized(update.effective_user):
         await deny(update)
@@ -399,6 +419,7 @@ async def begin_add(update, context):
 
     await query.message.reply_text(prompts[kind])
     return WAITING_TEXT
+
 
 async def save_new_text(update, context):
     if not authorized(update.effective_user):
@@ -428,6 +449,7 @@ async def save_new_text(update, context):
 
     await update.message.reply_text(prompt)
     return WAITING_DATE
+
 
 async def save_new_date(update, context):
     if not authorized(update.effective_user):
@@ -494,6 +516,7 @@ async def save_new_date(update, context):
 
     return ConversationHandler.END
 
+
 # ==================================================
 # MODIFICA DI ATTIVITÀ, ATTREZZATURE E MEZZI
 # ==================================================
@@ -543,6 +566,7 @@ async def begin_edit(update, context):
 
     return EDIT_FIELD
 
+
 async def choose_edit_field(update, context):
     query = update.callback_query
     await query.answer()
@@ -572,6 +596,7 @@ async def choose_edit_field(update, context):
 
     await query.message.reply_text(prompt)
     return EDIT_DATE
+
 
 async def save_edit_text(update, context):
     if not authorized(update.effective_user):
@@ -609,6 +634,7 @@ async def save_edit_text(update, context):
 
     context.user_data.clear()
     return ConversationHandler.END
+
 
 async def save_edit_date(update, context):
     if not authorized(update.effective_user):
@@ -667,6 +693,7 @@ async def save_edit_date(update, context):
     context.user_data.clear()
     return ConversationHandler.END
 
+
 async def cancel(update, context):
     context.user_data.clear()
 
@@ -676,6 +703,7 @@ async def cancel(update, context):
     )
 
     return ConversationHandler.END
+
 
 # ==================================================
 # CALENDARIO MENSILE
@@ -727,8 +755,10 @@ def month_events(year, month):
 
     return events
 
+
 def calendar_keyboard(year, month):
     events = month_events(year, month)
+    today = today_local()
 
     keyboard = [[
         InlineKeyboardButton(day, callback_data="noop")
@@ -744,11 +774,44 @@ def calendar_keyboard(year, month):
                     InlineKeyboardButton("·", callback_data="noop")
                 )
             else:
-                current_date = date(year, month, day).isoformat()
+                selected_date = date(year, month, day)
+                current_date = selected_date.isoformat()
+
+                # Indicatori indipendenti:
+                # 🔵 giorno corrente
+                # 🟡 attività
+                # 🔴 scadenze di revisione
+
+                markers = ""
+
+                if selected_date == today:
+                    markers += "🔵"
+
+                day_events = events.get(current_date, [])
+
+                has_activity = any(
+                    label == "📋 Attività"
+                    for label, text in day_events
+                )
+
+                has_revision = any(
+                    label in (
+                        "🤿 Revisione attrezzatura",
+                        "🚤 Revisione mezzo nautico"
+                    )
+                    for label, text in day_events
+                )
+
+                if has_activity:
+                    markers += "🟡"
+
+                if has_revision:
+                    markers += "🔴"
+
                 label = str(day)
 
-                if current_date in events:
-                    label += " •"
+                if markers:
+                    label += " " + markers
 
                 row.append(
                     InlineKeyboardButton(
@@ -764,8 +827,6 @@ def calendar_keyboard(year, month):
         date(year, month, calendar.monthrange(year, month)[1])
         + timedelta(days=1)
     )
-
-    today = today_local()
 
     keyboard.append([
         InlineKeyboardButton(
@@ -790,6 +851,7 @@ def calendar_keyboard(year, month):
 
     return InlineKeyboardMarkup(keyboard)
 
+
 def month_title(year, month):
     names = [
         "Gennaio", "Febbraio", "Marzo", "Aprile",
@@ -799,12 +861,15 @@ def month_title(year, month):
 
     return f"📅 CALENDARIO - {names[month - 1]} {year}"
 
+
 async def render_calendar(message, year, month, edit=False):
     text = (
         month_title(year, month)
         + "\n\n"
-        + "I giorni contrassegnati con • contengono attività "
-        "o scadenze.\nSeleziona un giorno per vedere i dettagli."
+        + "🔵 Oggi\n"
+        + "🟡 Attività programmate\n"
+        + "🔴 Scadenze di mezzi e attrezzature\n\n"
+        + "Seleziona un giorno per vedere i dettagli."
     )
 
     keyboard = calendar_keyboard(year, month)
@@ -819,6 +884,7 @@ async def render_calendar(message, year, month, edit=False):
             text,
             reply_markup=keyboard
         )
+
 
 async def show_calendar_day(query, selected_date):
     try:
@@ -891,6 +957,7 @@ async def show_calendar_day(query, selected_date):
         output,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
 
 # ==================================================
 # NOTIFICHE AUTOMATICHE
@@ -984,6 +1051,7 @@ async def send_due_notifications(application):
         print(f"Errore invio notifiche: {error}")
         return False
 
+
 async def notification_loop(application):
     last_notification_date = None
 
@@ -1029,10 +1097,12 @@ async def notification_loop(application):
 
         await asyncio.sleep(max(1, seconds))
 
+
 async def post_init(application):
     application.bot_data["notification_task"] = asyncio.create_task(
         notification_loop(application)
     )
+
 
 async def post_shutdown(application):
     task = application.bot_data.get("notification_task")
@@ -1043,6 +1113,7 @@ async def post_shutdown(application):
             await task
         except asyncio.CancelledError:
             pass
+
 
 # ==================================================
 # GESTIONE PULSANTI
@@ -1108,6 +1179,7 @@ async def buttons(update, context):
             int, action.replace("calback_", "").split("-")
         )
         await render_calendar(query.message, year, month)
+
 
 # ==================================================
 # AVVIO
@@ -1209,6 +1281,7 @@ def main():
 
     print("NUCLEO BOT avviato.")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
