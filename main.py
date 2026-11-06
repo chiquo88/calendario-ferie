@@ -764,4 +764,691 @@ async def save_edit_date(update, context):
             (
                 parsed,
                 update.effective_user.full_name,
-             
+                now_text(),
+                item_id
+            )
+        )
+
+    if result.rowcount == 0:
+        await update.message.reply_text("Elemento non trovato.")
+    else:
+        await update.message.reply_text(
+            "✅ Data aggiornata correttamente.",
+            reply_markup=main_keyboard()
+        )
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def cancel(update, context):
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "Operazione annullata.",
+        reply_markup=main_keyboard()
+    )
+
+    return ConversationHandler.END
+
+
+# ==================================================
+# CALENDARIO MENSILE
+# ==================================================
+
+def month_events(year, month):
+    first = date(year, month, 1)
+    last_day = calendar.monthrange(year, month)[1]
+    last = date(year, month, last_day)
+
+    start = first.isoformat()
+    end = last.isoformat()
+
+    events = {}
+
+    with db() as con:
+        rows = con.execute(
+            "SELECT event_date, text FROM tasks "
+            "WHERE event_date BETWEEN ? AND ?",
+            (start, end)
+        ).fetchall()
+
+        for event_date, text in rows:
+            events.setdefault(event_date, []).append(
+                ("📋 Attività", text)
+            )
+
+        rows = con.execute(
+            "SELECT reminder_date, text FROM reminders "
+            "WHERE reminder_date BETWEEN ? AND ?",
+            (start, end)
+        ).fetchall()
+
+        for reminder_date, text in rows:
+            events.setdefault(reminder_date, []).append(
+                ("🔔 Promemoria", text)
+            )
+
+    return events
+
+
+def calendar_keyboard(year, month):
+    events = month_events(year, month)
+    today = today_local()
+
+    keyboard = [[
+        InlineKeyboardButton(day, callback_data="noop")
+        for day in ["Lu", "Ma", "Me", "Gi", "Ve", "Sa", "Do"]
+    ]]
+
+    for week in calendar.monthcalendar(year, month):
+        row = []
+
+        for day in week:
+            if day == 0:
+                row.append(
+                    InlineKeyboardButton("·", callback_data="noop")
+                )
+            else:
+                selected_date = date(year, month, day)
+                current_date = selected_date.isoformat()
+
+                markers = ""
+
+                if selected_date == today:
+                    markers += "👉"
+
+                day_events = events.get(current_date, [])
+
+                has_activity = any(
+                    label == "📋 Attività"
+                    for label, text in day_events
+                )
+
+                has_reminder = any(
+                    label == "🔔 Promemoria"
+                    for label, text in day_events
+                )
+
+                if has_activity:
+                    markers += "📋"
+
+                if has_reminder:
+                    markers += "🔔"
+
+                label = str(day)
+
+                if markers:
+                    label += " " + markers
+
+                row.append(
+                    InlineKeyboardButton(
+                        label,
+                        callback_data=f"calday_{current_date}"
+                    )
+                )
+
+        keyboard.append(row)
+
+    previous_month = date(year, month, 1) - timedelta(days=1)
+    next_month = (
+        date(year, month, calendar.monthrange(year, month)[1])
+        + timedelta(days=1)
+    )
+
+    keyboard.append([
+        InlineKeyboardButton(
+            "⬅️",
+            callback_data=f"calprev_{previous_month.year}-{previous_month.month}"
+        ),
+        InlineKeyboardButton(
+            "📅 Oggi",
+            callback_data=f"caltoday_{today.year}-{today.month}"
+        ),
+        InlineKeyboardButton(
+            "➡️",
+            callback_data=f"calnext_{next_month.year}-{next_month.month}"
+        )
+    ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            "➕ Nuova attività", callback_data="add_tasks"
+        ),
+        InlineKeyboardButton(
+            "🔔 Promemoria", callback_data="add_reminder"
+        )
+    ])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+def month_title(year, month):
+    names = [
+        "Gennaio", "Febbraio", "Marzo", "Aprile",
+        "Maggio", "Giugno", "Luglio", "Agosto",
+        "Settembre", "Ottobre", "Novembre", "Dicembre"
+    ]
+
+    return f"📅 CALENDARIO - {names[month - 1]} {year}"
+
+
+async def render_calendar(message, year, month, edit=False):
+    text = (
+        month_title(year, month)
+        + "\n\n"
+        + "👉 Oggi\n"
+        + "📋 Attività programmate\n"
+        + "🔔 Promemoria con notifica alle 08:00\n\n"
+        + "Seleziona un giorno per vedere i dettagli."
+    )
+
+    keyboard = calendar_keyboard(year, month)
+
+    if edit:
+        await message.edit_text(
+            text,
+            reply_markup=keyboard
+        )
+    else:
+        await message.reply_text(
+            text,
+            reply_markup=keyboard
+        )
+
+
+async def show_calendar_day(query, selected_date):
+    try:
+        date.fromisoformat(selected_date)
+    except ValueError:
+        await query.message.reply_text("Data non valida.")
+        return
+
+    events = []
+
+    with db() as con:
+        rows = con.execute(
+            "SELECT id, text FROM tasks WHERE event_date = ?",
+            (selected_date,)
+        ).fetchall()
+
+        for item_id, text in rows:
+            events.append(
+                ("tasks", item_id, "📋 Attività", text)
+            )
+
+        rows = con.execute(
+            "SELECT id, text FROM reminders WHERE reminder_date = ?",
+            (selected_date,)
+        ).fetchall()
+
+        for item_id, text in rows:
+            events.append(
+                ("reminders", item_id, "🔔 Promemoria", text)
+            )
+
+        # Le vecchie registrazioni di revisioni restano consultabili.
+        # Non generano più notifiche automatiche.
+
+        rows = con.execute(
+            "SELECT id, text FROM equipment WHERE revision_date = ?",
+            (selected_date,)
+        ).fetchall()
+
+        for item_id, text in rows:
+            events.append(
+                ("equipment", item_id, "🤿 Revisione attrezzatura", text)
+            )
+
+        rows = con.execute(
+            "SELECT id, text FROM boats WHERE revision_date = ?",
+            (selected_date,)
+        ).fetchall()
+
+        for item_id, text in rows:
+            events.append(
+                ("boats", item_id, "🚤 Revisione mezzo nautico", text)
+            )
+
+    output = (
+        f"📅 IMPEGNI DEL {display_date(selected_date)}\n\n"
+    )
+
+    if not events:
+        output += "Nessuna attività o promemoria programmato."
+    else:
+        for kind, item_id, label, text in events:
+            output += f"{label}\n{text}\n\n"
+
+    keyboard = []
+
+    for kind, item_id, label, text in events:
+        if kind == "tasks":
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"✏️ Modifica attività #{item_id}",
+                    callback_data=f"edit_{kind}_{item_id}"
+                )
+            ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            "↩️ Torna al calendario",
+            callback_data=f"calback_{selected_date[:7]}"
+        )
+    ])
+
+    await query.message.reply_text(
+        output,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# ==================================================
+# RIEPILOGO SETTIMANALE DEL GIOVEDÌ
+# ==================================================
+
+def next_week_range(reference_date):
+    days_until_monday = 7 - reference_date.weekday()
+    monday = reference_date + timedelta(days=days_until_monday)
+    sunday = monday + timedelta(days=6)
+
+    return monday, sunday
+
+
+async def send_weekly_summary(application, today):
+    monday, sunday = next_week_range(today)
+
+    week_key = monday.isoformat()
+
+    with db() as con:
+        already_sent = con.execute(
+            "SELECT 1 FROM notification_log "
+            "WHERE notification_type = 'weekly' "
+            "AND notification_key = ?",
+            (week_key,)
+        ).fetchone()
+
+        if already_sent:
+            return True
+
+        tasks = con.execute(
+            "SELECT event_date, text FROM tasks "
+            "WHERE event_date BETWEEN ? AND ? "
+            "ORDER BY event_date, id",
+            (monday.isoformat(), sunday.isoformat())
+        ).fetchall()
+
+    weekday_names = [
+        "Lunedì", "Martedì", "Mercoledì", "Giovedì",
+        "Venerdì", "Sabato", "Domenica"
+    ]
+
+    message = (
+        "📋 RIEPILOGO SETTIMANALE - NUCLEO SOMMOZZATORI\n\n"
+        f"📅 Settimana dal {monday.strftime('%d/%m/%Y')} "
+        f"al {sunday.strftime('%d/%m/%Y')}\n\n"
+    )
+
+    if not tasks:
+        message += "Nessuna attività programmata per la prossima settimana."
+    else:
+        current_date = None
+
+        for event_date, text in tasks:
+            task_day = date.fromisoformat(event_date)
+
+            if event_date != current_date:
+                current_date = event_date
+                weekday = weekday_names[task_day.weekday()]
+
+                message += (
+                    f"\n📌 {weekday} {task_day.strftime('%d/%m/%Y')}\n"
+                )
+
+            message += f"• {text}\n"
+
+    message += "\n🤿 NUCLEO BOT"
+
+    try:
+        await application.bot.send_message(
+            chat_id=int(GROUP_CHAT_ID),
+            text=message
+        )
+
+        with db() as con:
+            con.execute(
+                "INSERT OR IGNORE INTO notification_log "
+                "(notification_type, notification_key, sent_at) "
+                "VALUES ('weekly', ?, ?)",
+                (week_key, now_text())
+            )
+
+        print(f"Riepilogo settimanale inviato per la settimana {week_key}.")
+        return True
+
+    except Exception as error:
+        print(f"Errore invio riepilogo settimanale: {error}")
+        return False
+
+
+# ==================================================
+# NOTIFICHE PROMEMORIA
+# ==================================================
+
+async def send_daily_reminders(application, today):
+    today_string = today.isoformat()
+
+    with db() as con:
+        reminders = con.execute(
+            "SELECT id, text, author FROM reminders "
+            "WHERE reminder_date = ? AND notified = 0 "
+            "ORDER BY id",
+            (today_string,)
+        ).fetchall()
+
+    if not reminders:
+        return True
+
+    message = (
+        "🔔 PROMEMORIA DEL GIORNO - NUCLEO SOMMOZZATORI\n\n"
+        f"📅 {today.strftime('%d/%m/%Y')}\n\n"
+    )
+
+    for item_id, text, author in reminders:
+        message += f"• {text}\n"
+
+    message += "\n🤿 NUCLEO BOT"
+
+    try:
+        await application.bot.send_message(
+            chat_id=int(GROUP_CHAT_ID),
+            text=message
+        )
+
+        with db() as con:
+            for item_id, text, author in reminders:
+                con.execute(
+                    "UPDATE reminders SET notified = 1 WHERE id = ?",
+                    (item_id,)
+                )
+
+        print("Promemoria giornalieri inviati correttamente.")
+        return True
+
+    except Exception as error:
+        print(f"Errore invio promemoria: {error}")
+        return False
+
+
+# ==================================================
+# GESTIONE NOTIFICHE DELLE ORE 08:00
+# ==================================================
+
+async def process_morning_notifications(application):
+    if not GROUP_CHAT_ID:
+        print("GROUP_CHAT_ID non configurato.")
+        return False
+
+    try:
+        int(GROUP_CHAT_ID)
+    except ValueError:
+        print("GROUP_CHAT_ID non valido.")
+        return False
+
+    today = today_local()
+    success = True
+
+    # Ogni giorno vengono controllati i promemoria.
+    reminders_ok = await send_daily_reminders(application, today)
+
+    if not reminders_ok:
+        success = False
+
+    # Il riepilogo settimanale viene inviato soltanto il giovedì.
+    if today.weekday() == 3:
+        weekly_ok = await send_weekly_summary(application, today)
+
+        if not weekly_ok:
+            success = False
+
+    return success
+
+
+async def notification_loop(application):
+    while True:
+        now = datetime.now(TZ)
+
+        if now.time() >= time(8, 0):
+            success = await process_morning_notifications(application)
+
+            if success:
+                tomorrow = now.date() + timedelta(days=1)
+
+                next_run = datetime.combine(
+                    tomorrow,
+                    time(8, 0),
+                    tzinfo=TZ
+                )
+
+                seconds = (
+                    next_run - datetime.now(TZ)
+                ).total_seconds()
+            else:
+                # In caso di errore riprova dopo 5 minuti.
+                seconds = 300
+
+        else:
+            next_run = datetime.combine(
+                now.date(),
+                time(8, 0),
+                tzinfo=TZ
+            )
+
+            seconds = (next_run - now).total_seconds()
+
+        await asyncio.sleep(max(1, seconds))
+
+
+async def post_init(application):
+    application.bot_data["notification_task"] = asyncio.create_task(
+        notification_loop(application)
+    )
+
+
+async def post_shutdown(application):
+    task = application.bot_data.get("notification_task")
+
+    if task:
+        task.cancel()
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+# ==================================================
+# GESTIONE PULSANTI
+# ==================================================
+
+async def buttons(update, context):
+    if not authorized(update.effective_user):
+        await deny(update)
+        return
+
+    query = update.callback_query
+    await query.answer()
+
+    action = query.data
+
+    if action == "noop":
+        return
+
+    if action == "menu":
+        await query.message.reply_text(
+            "🤿 MENU PRINCIPALE",
+            reply_markup=main_keyboard()
+        )
+
+    elif action == "addmenu":
+        await add_menu(update)
+
+    elif action == "tasks":
+        await show_list(update, action)
+
+    elif action == "calendar":
+        today = today_local()
+
+        await render_calendar(
+            query.message,
+            today.year,
+            today.month
+        )
+
+    elif action.startswith("calday_"):
+        selected_date = action.replace("calday_", "")
+        await show_calendar_day(query, selected_date)
+
+    elif action.startswith("calprev_"):
+        year, month = map(
+            int, action.replace("calprev_", "").split("-")
+        )
+
+        await render_calendar(
+            query.message, year, month, edit=True
+        )
+
+    elif action.startswith("calnext_"):
+        year, month = map(
+            int, action.replace("calnext_", "").split("-")
+        )
+
+        await render_calendar(
+            query.message, year, month, edit=True
+        )
+
+    elif action.startswith("caltoday_"):
+        year, month = map(
+            int, action.replace("caltoday_", "").split("-")
+        )
+
+        await render_calendar(
+            query.message, year, month, edit=True
+        )
+
+    elif action.startswith("calback_"):
+        year, month = map(
+            int, action.replace("calback_", "").split("-")
+        )
+
+        await render_calendar(
+            query.message, year, month
+        )
+
+
+# ==================================================
+# AVVIO
+# ==================================================
+
+def main():
+    if not TOKEN:
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN non configurato."
+        )
+
+    init_db()
+
+    if not ALLOWED_USERS:
+        print("ATTENZIONE: nessun utente autorizzato configurato.")
+
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
+
+    app.add_handler(CommandHandler("id", get_id))
+    app.add_handler(CommandHandler("chatid", get_chat_id))
+    app.add_handler(CommandHandler("start", start))
+
+    app.add_handler(
+        CallbackQueryHandler(
+            assistant_start,
+            pattern=r"^assistant$"
+        )
+    )
+
+    add_conversation = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(
+                begin_add,
+                pattern=r"^add_(tasks|reminder)$"
+            )
+        ],
+        states={
+            WAITING_TEXT: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    save_new_text
+                )
+            ],
+            WAITING_DATE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    save_new_date
+                )
+            ]
+        },
+        fallbacks=[
+            CommandHandler("annulla", cancel)
+        ],
+        allow_reentry=True
+    )
+
+    edit_conversation = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(
+                begin_edit,
+                pattern=r"^edit_(tasks|equipment|boats)_\d+$"
+            )
+        ],
+        states={
+            EDIT_FIELD: [
+                CallbackQueryHandler(
+                    choose_edit_field,
+                    pattern=r"^field_(text|date)$"
+                )
+            ],
+            EDIT_TEXT: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    save_edit_text
+                )
+            ],
+            EDIT_DATE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    save_edit_date
+                )
+            ]
+        },
+        fallbacks=[
+            CommandHandler("annulla", cancel)
+        ],
+        allow_reentry=True
+    )
+
+    app.add_handler(add_conversation)
+    app.add_handler(edit_conversation)
+    app.add_handler(CallbackQueryHandler(buttons))
+
+    print("NUCLEO BOT avviato.")
+
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
