@@ -59,6 +59,38 @@ EDIT_TEXT = 4
 EDIT_DATE = 5
 
 # ==================================================
+# COLLEGAMENTI ESTERNI
+# ==================================================
+
+URL_EROGATORI = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1V0T3S-opbrtNdWkxRFF_v2U1FGfKjL1q8QncxvweSFw/edit?usp=drivesdk"
+)
+
+URL_BOMBOLE = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1cvYU9pHaKb8O7nXuziXX98igO_phSe8L/"
+    "edit?usp=drivesdk&ouid=116969727930731164385&rtpof=true&sd=true"
+)
+
+URL_MEZZI_CARRELLI = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1MM1wp17Lb1Nsa7IHvDpbkujZzRgpqMQPfRgSvu374Jc/edit?usp=drivesdk"
+)
+
+URL_MOSE = "https://www.autoritalaguna.it/operativita-m-o-s-e/"
+
+URL_MAREA = (
+    "https://www.comune.venezia.it/it/content/"
+    "centro-previsioni-e-segnalazioni-maree"
+)
+
+URL_MOTO_ONDOSO = (
+    "https://www.comune.venezia.it/it/content/"
+    "previsioni-onda-alto-adriatico-0"
+)
+
+# ==================================================
 # DATABASE
 # ==================================================
 
@@ -114,6 +146,23 @@ def init_db():
             text TEXT,
             author TEXT,
             created TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT,
+            author TEXT,
+            created TEXT,
+            reminder_date TEXT,
+            notified INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS notification_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            notification_type TEXT NOT NULL,
+            notification_key TEXT NOT NULL,
+            sent_at TEXT,
+            UNIQUE(notification_type, notification_key)
         );
         """)
 
@@ -181,7 +230,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "🤿 NUCLEO BOT\n"
-        "Gestione attività, mezzi e attrezzature "
+        "Gestione attività, promemoria, mezzi e attrezzature "
         "del Nucleo Sommozzatori.\n\n"
         "Seleziona una funzione:",
         reply_markup=main_keyboard()
@@ -204,26 +253,43 @@ def main_keyboard():
         ],
         [
             InlineKeyboardButton(
-                "🚤 Mezzi nautici", callback_data="boats"
-            ),
-            InlineKeyboardButton(
-                "🤿 Attrezzature", callback_data="equipment"
-            )
-        ],
-        [
-            InlineKeyboardButton(
                 "📋 Attività", callback_data="tasks"
             )
         ],
         [
             InlineKeyboardButton(
-                "🌐 Meteo marino",
-                url="https://www.comune.venezia.it/it/content/previsioni-onda-alto-adriatico-0"
+                "➕ Inserisci attività", callback_data="addmenu"
             )
         ],
         [
             InlineKeyboardButton(
-                "➕ Inserisci informazioni", callback_data="addmenu"
+                "🔔 Aggiungi promemoria", callback_data="add_reminder"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🤿 Erogatori", url=URL_EROGATORI
+            ),
+            InlineKeyboardButton(
+                "🛢️ Bombole", url=URL_BOMBOLE
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🚤 Mezzi&Carrelli", url=URL_MEZZI_CARRELLI
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🌊 MOSE", url=URL_MOSE
+            ),
+            InlineKeyboardButton(
+                "🌊 Marea", url=URL_MAREA
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🌊 Moto Ondoso", url=URL_MOTO_ONDOSO
             )
         ]
     ])
@@ -367,7 +433,7 @@ async def show_list(update, kind):
 
 
 # ==================================================
-# INSERIMENTO INFORMAZIONI
+# INSERIMENTO ATTIVITÀ E PROMEMORIA
 # ==================================================
 
 async def add_menu(update):
@@ -379,12 +445,7 @@ async def add_menu(update):
         ],
         [
             InlineKeyboardButton(
-                "🤿 Nuova attrezzatura", callback_data="add_equipment"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🚤 Nuovo mezzo nautico", callback_data="add_boats"
+                "🔔 Nuovo promemoria", callback_data="add_reminder"
             )
         ],
         [
@@ -409,15 +470,21 @@ async def begin_add(update, context):
     await query.answer()
 
     kind = query.data.replace("add_", "")
+
+    if kind not in ("tasks", "reminder"):
+        return ConversationHandler.END
+
     context.user_data["kind"] = kind
 
-    prompts = {
-        "tasks": "📋 Descrivi l'attività da registrare:",
-        "equipment": "🤿 Inserisci nome, matricola e dettagli dell'attrezzatura:",
-        "boats": "🚤 Inserisci nome, matricola e dettagli del mezzo nautico:"
-    }
+    if kind == "tasks":
+        prompt = "📋 Descrivi l'attività da registrare:"
+    else:
+        prompt = (
+            "🔔 Descrivi il promemoria che vuoi ricevere:"
+        )
 
-    await query.message.reply_text(prompts[kind])
+    await query.message.reply_text(prompt)
+
     return WAITING_TEXT
 
 
@@ -429,7 +496,9 @@ async def save_new_text(update, context):
     text = update.message.text.strip()
 
     if not text:
-        await update.message.reply_text("Inserisci una descrizione valida.")
+        await update.message.reply_text(
+            "Inserisci una descrizione valida."
+        )
         return WAITING_TEXT
 
     context.user_data["new_text"] = text
@@ -440,12 +509,14 @@ async def save_new_text(update, context):
             "📅 Inserisci il giorno di svolgimento dell'attività "
             "nel formato GG/MM/AAAA:"
         )
-    else:
+    elif kind == "reminder":
         prompt = (
-            "🔧 Inserisci la data della prossima revisione "
-            "nel formato GG/MM/AAAA.\n\n"
-            "Se la data non è ancora prevista, scrivi -"
+            "📅 Inserisci il giorno in cui vuoi ricevere "
+            "il promemoria, nel formato GG/MM/AAAA.\n\n"
+            "La notifica verrà inviata alle ore 08:00 italiane."
         )
+    else:
+        return ConversationHandler.END
 
     await update.message.reply_text(prompt)
     return WAITING_DATE
@@ -460,32 +531,36 @@ async def save_new_date(update, context):
     text = context.user_data.get("new_text", "")
     value = update.message.text.strip()
 
-    if kind == "tasks":
-        parsed = parse_date(value)
+    if kind not in ("tasks", "reminder"):
+        return ConversationHandler.END
 
-        if not parsed:
+    parsed = parse_date(value)
+
+    if not parsed:
+        await update.message.reply_text(
+            "❌ Data non valida. Usa il formato GG/MM/AAAA."
+        )
+        return WAITING_DATE
+
+    selected_date = date.fromisoformat(parsed)
+    today = today_local()
+
+    if kind == "reminder":
+        now = datetime.now(TZ)
+
+        if selected_date < today:
             await update.message.reply_text(
-                "❌ Data non valida. Usa il formato GG/MM/AAAA."
+                "❌ Non puoi impostare un promemoria per una data passata. "
+                "Inserisci una nuova data:"
             )
             return WAITING_DATE
 
-        event_date = parsed
-        revision_date = None
-
-    else:
-        if value == "-":
-            parsed = None
-        else:
-            parsed = parse_date(value)
-
-            if not parsed:
-                await update.message.reply_text(
-                    "❌ Data non valida. Usa GG/MM/AAAA oppure -."
-                )
-                return WAITING_DATE
-
-        event_date = None
-        revision_date = parsed
+        if selected_date == today and now.time() >= time(8, 0):
+            await update.message.reply_text(
+                "❌ Le notifiche delle 08:00 di oggi sono già passate. "
+                "Scegli da domani in poi:"
+            )
+            return WAITING_DATE
 
     user = update.effective_user
     author = user.full_name
@@ -497,20 +572,32 @@ async def save_new_date(update, context):
                 "INSERT INTO tasks "
                 "(text, author, created, event_date, notified) "
                 "VALUES (?, ?, ?, ?, 0)",
-                (text, author, created, event_date)
+                (text, author, created, parsed)
             )
         else:
             con.execute(
-                f"INSERT INTO {kind} "
-                "(text, author, created, revision_date, notified) "
+                "INSERT INTO reminders "
+                "(text, author, created, reminder_date, notified) "
                 "VALUES (?, ?, ?, ?, 0)",
-                (text, author, created, revision_date)
+                (text, author, created, parsed)
             )
 
     context.user_data.clear()
 
+    if kind == "tasks":
+        confirmation = (
+            "✅ Attività inserita correttamente!\n"
+            f"📅 Data: {display_date(parsed)}"
+        )
+    else:
+        confirmation = (
+            "✅ Promemoria inserito correttamente!\n"
+            f"🔔 Notifica prevista il {display_date(parsed)} "
+            "alle ore 08:00."
+        )
+
     await update.message.reply_text(
-        "✅ Registrazione inserita correttamente!",
+        confirmation,
         reply_markup=main_keyboard()
     )
 
@@ -518,7 +605,7 @@ async def save_new_date(update, context):
 
 
 # ==================================================
-# MODIFICA DI ATTIVITÀ, ATTREZZATURE E MEZZI
+# MODIFICA ATTIVITÀ E VECCHI ELEMENTI
 # ==================================================
 
 async def begin_edit(update, context):
@@ -677,611 +764,4 @@ async def save_edit_date(update, context):
             (
                 parsed,
                 update.effective_user.full_name,
-                now_text(),
-                item_id
-            )
-        )
-
-    if result.rowcount == 0:
-        await update.message.reply_text("Elemento non trovato.")
-    else:
-        await update.message.reply_text(
-            "✅ Data aggiornata correttamente.",
-            reply_markup=main_keyboard()
-        )
-
-    context.user_data.clear()
-    return ConversationHandler.END
-
-
-async def cancel(update, context):
-    context.user_data.clear()
-
-    await update.message.reply_text(
-        "Operazione annullata.",
-        reply_markup=main_keyboard()
-    )
-
-    return ConversationHandler.END
-
-
-# ==================================================
-# CALENDARIO MENSILE
-# ==================================================
-
-def month_events(year, month):
-    first = date(year, month, 1)
-    last_day = calendar.monthrange(year, month)[1]
-    last = date(year, month, last_day)
-
-    start = first.isoformat()
-    end = last.isoformat()
-
-    events = {}
-
-    with db() as con:
-        rows = con.execute(
-            "SELECT event_date, text FROM tasks "
-            "WHERE event_date BETWEEN ? AND ?",
-            (start, end)
-        ).fetchall()
-
-        for event_date, text in rows:
-            events.setdefault(event_date, []).append(
-                ("📋 Attività", text)
-            )
-
-        rows = con.execute(
-            "SELECT revision_date, text FROM equipment "
-            "WHERE revision_date BETWEEN ? AND ?",
-            (start, end)
-        ).fetchall()
-
-        for event_date, text in rows:
-            events.setdefault(event_date, []).append(
-                ("🤿 Revisione attrezzatura", text)
-            )
-
-        rows = con.execute(
-            "SELECT revision_date, text FROM boats "
-            "WHERE revision_date BETWEEN ? AND ?",
-            (start, end)
-        ).fetchall()
-
-        for event_date, text in rows:
-            events.setdefault(event_date, []).append(
-                ("🚤 Revisione mezzo nautico", text)
-            )
-
-    return events
-
-
-def calendar_keyboard(year, month):
-    events = month_events(year, month)
-    today = today_local()
-
-    keyboard = [[
-        InlineKeyboardButton(day, callback_data="noop")
-        for day in ["Lu", "Ma", "Me", "Gi", "Ve", "Sa", "Do"]
-    ]]
-
-    for week in calendar.monthcalendar(year, month):
-        row = []
-
-        for day in week:
-            if day == 0:
-                row.append(
-                    InlineKeyboardButton("·", callback_data="noop")
-                )
-            else:
-                selected_date = date(year, month, day)
-                current_date = selected_date.isoformat()
-
-                # Indicatori indipendenti:
-                # 🔵 giorno corrente
-                # 🟡 attività
-                # 🔴 scadenze di revisione
-
-                markers = ""
-
-                if selected_date == today:
-                    markers += "🔵"
-
-                day_events = events.get(current_date, [])
-
-                has_activity = any(
-                    label == "📋 Attività"
-                    for label, text in day_events
-                )
-
-                has_revision = any(
-                    label in (
-                        "🤿 Revisione attrezzatura",
-                        "🚤 Revisione mezzo nautico"
-                    )
-                    for label, text in day_events
-                )
-
-                if has_activity:
-                    markers += "🟡"
-
-                if has_revision:
-                    markers += "🔴"
-
-                label = str(day)
-
-                if markers:
-                    label += " " + markers
-
-                row.append(
-                    InlineKeyboardButton(
-                        label,
-                        callback_data=f"calday_{current_date}"
-                    )
-                )
-
-        keyboard.append(row)
-
-    previous_month = date(year, month, 1) - timedelta(days=1)
-    next_month = (
-        date(year, month, calendar.monthrange(year, month)[1])
-        + timedelta(days=1)
-    )
-
-    keyboard.append([
-        InlineKeyboardButton(
-            "⬅️",
-            callback_data=f"calprev_{previous_month.year}-{previous_month.month}"
-        ),
-        InlineKeyboardButton(
-            "📅 Oggi",
-            callback_data=f"caltoday_{today.year}-{today.month}"
-        ),
-        InlineKeyboardButton(
-            "➡️",
-            callback_data=f"calnext_{next_month.year}-{next_month.month}"
-        )
-    ])
-
-    keyboard.append([
-        InlineKeyboardButton(
-            "➕ Nuova attività", callback_data="add_tasks"
-        )
-    ])
-
-    return InlineKeyboardMarkup(keyboard)
-
-
-def month_title(year, month):
-    names = [
-        "Gennaio", "Febbraio", "Marzo", "Aprile",
-        "Maggio", "Giugno", "Luglio", "Agosto",
-        "Settembre", "Ottobre", "Novembre", "Dicembre"
-    ]
-
-    return f"📅 CALENDARIO - {names[month - 1]} {year}"
-
-
-async def render_calendar(message, year, month, edit=False):
-    text = (
-        month_title(year, month)
-        + "\n\n"
-        + "🔵 Oggi\n"
-        + "🟡 Attività programmate\n"
-        + "🔴 Scadenze di mezzi e attrezzature\n\n"
-        + "Seleziona un giorno per vedere i dettagli."
-    )
-
-    keyboard = calendar_keyboard(year, month)
-
-    if edit:
-        await message.edit_text(
-            text,
-            reply_markup=keyboard
-        )
-    else:
-        await message.reply_text(
-            text,
-            reply_markup=keyboard
-        )
-
-
-async def show_calendar_day(query, selected_date):
-    try:
-        date.fromisoformat(selected_date)
-    except ValueError:
-        await query.message.reply_text("Data non valida.")
-        return
-
-    events = []
-
-    with db() as con:
-        rows = con.execute(
-            "SELECT id, text FROM tasks WHERE event_date = ?",
-            (selected_date,)
-        ).fetchall()
-
-        for item_id, text in rows:
-            events.append(
-                ("tasks", item_id, "📋 Attività", text)
-            )
-
-        rows = con.execute(
-            "SELECT id, text FROM equipment WHERE revision_date = ?",
-            (selected_date,)
-        ).fetchall()
-
-        for item_id, text in rows:
-            events.append(
-                ("equipment", item_id, "🤿 Revisione attrezzatura", text)
-            )
-
-        rows = con.execute(
-            "SELECT id, text FROM boats WHERE revision_date = ?",
-            (selected_date,)
-        ).fetchall()
-
-        for item_id, text in rows:
-            events.append(
-                ("boats", item_id, "🚤 Revisione mezzo nautico", text)
-            )
-
-    output = (
-        f"📅 IMPEGNI DEL {display_date(selected_date)}\n\n"
-    )
-
-    if not events:
-        output += "Nessuna attività o revisione programmata."
-    else:
-        for kind, item_id, label, text in events:
-            output += f"{label}\n{text}\n\n"
-
-    keyboard = []
-
-    for kind, item_id, label, text in events:
-        keyboard.append([
-            InlineKeyboardButton(
-                f"✏️ Modifica #{item_id} - {label}",
-                callback_data=f"edit_{kind}_{item_id}"
-            )
-        ])
-
-    keyboard.append([
-        InlineKeyboardButton(
-            "↩️ Torna al calendario",
-            callback_data=f"calback_{selected_date[:7]}"
-        )
-    ])
-
-    await query.message.reply_text(
-        output,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# ==================================================
-# NOTIFICHE AUTOMATICHE
-# ==================================================
-
-async def send_due_notifications(application):
-    if not GROUP_CHAT_ID:
-        print("GROUP_CHAT_ID non configurato.")
-        return False
-
-    try:
-        chat_id = int(GROUP_CHAT_ID)
-    except ValueError:
-        print("GROUP_CHAT_ID non valido.")
-        return False
-
-    today = today_local()
-
-    activity_date = (today + timedelta(days=10)).isoformat()
-    revision_date = (today + timedelta(days=14)).isoformat()
-
-    sections = []
-    updates = []
-
-    with db() as con:
-        tasks = con.execute(
-            "SELECT id, text FROM tasks "
-            "WHERE event_date = ? AND notified = 0",
-            (activity_date,)
-        ).fetchall()
-
-        equipment = con.execute(
-            "SELECT id, text FROM equipment "
-            "WHERE revision_date = ? AND notified = 0",
-            (revision_date,)
-        ).fetchall()
-
-        boats = con.execute(
-            "SELECT id, text FROM boats "
-            "WHERE revision_date = ? AND notified = 0",
-            (revision_date,)
-        ).fetchall()
-
-    if tasks:
-        section = "📋 ATTIVITÀ TRA 10 GIORNI\n"
-        for item_id, text in tasks:
-            section += f"• {text}\n"
-            updates.append(("tasks", item_id))
-        sections.append(section)
-
-    if equipment:
-        section = "🤿 REVISIONI ATTREZZATURE TRA 14 GIORNI\n"
-        for item_id, text in equipment:
-            section += f"• {text}\n"
-            updates.append(("equipment", item_id))
-        sections.append(section)
-
-    if boats:
-        section = "🚤 REVISIONI MEZZI NAUTICI TRA 14 GIORNI\n"
-        for item_id, text in boats:
-            section += f"• {text}\n"
-            updates.append(("boats", item_id))
-        sections.append(section)
-
-    if not sections:
-        return True
-
-    message = (
-        "🔔 PROMEMORIA NUCLEO SOMMOZZATORI\n\n"
-        + "\n\n".join(sections)
-        + "\n\n📅 Promemoria automatico del NUCLEO BOT."
-    )
-
-    try:
-        await application.bot.send_message(
-            chat_id=chat_id,
-            text=message
-        )
-
-        with db() as con:
-            for kind, item_id in updates:
-                con.execute(
-                    f"UPDATE {kind} SET notified = 1 WHERE id = ?",
-                    (item_id,)
-                )
-
-        print("Notifiche inviate correttamente.")
-        return True
-
-    except Exception as error:
-        print(f"Errore invio notifiche: {error}")
-        return False
-
-
-async def notification_loop(application):
-    last_notification_date = None
-
-    while True:
-        now = datetime.now(TZ)
-        today = now.date()
-
-        if now.hour >= 8 and last_notification_date != today:
-            success = await send_due_notifications(application)
-
-            if success:
-                last_notification_date = today
-
-                tomorrow = today + timedelta(days=1)
-                next_run = datetime.combine(
-                    tomorrow,
-                    time(8, 0),
-                    tzinfo=TZ
-                )
-                seconds = (next_run - datetime.now(TZ)).total_seconds()
-            else:
-                seconds = 300
-
-        else:
-            if last_notification_date == today:
-                tomorrow = today + timedelta(days=1)
-                next_run = datetime.combine(
-                    tomorrow,
-                    time(8, 0),
-                    tzinfo=TZ
-                )
-            else:
-                next_run = datetime.combine(
-                    today,
-                    time(8, 0),
-                    tzinfo=TZ
-                )
-
-                if now >= next_run:
-                    next_run += timedelta(days=1)
-
-            seconds = (next_run - now).total_seconds()
-
-        await asyncio.sleep(max(1, seconds))
-
-
-async def post_init(application):
-    application.bot_data["notification_task"] = asyncio.create_task(
-        notification_loop(application)
-    )
-
-
-async def post_shutdown(application):
-    task = application.bot_data.get("notification_task")
-
-    if task:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-
-# ==================================================
-# GESTIONE PULSANTI
-# ==================================================
-
-async def buttons(update, context):
-    if not authorized(update.effective_user):
-        await deny(update)
-        return
-
-    query = update.callback_query
-    await query.answer()
-
-    action = query.data
-
-    if action == "noop":
-        return
-
-    if action == "menu":
-        await query.message.reply_text(
-            "🤿 MENU PRINCIPALE",
-            reply_markup=main_keyboard()
-        )
-
-    elif action == "addmenu":
-        await add_menu(update)
-
-    elif action in TABLES:
-        await show_list(update, action)
-
-    elif action == "calendar":
-        today = today_local()
-        await render_calendar(
-            query.message,
-            today.year,
-            today.month
-        )
-
-    elif action.startswith("calday_"):
-        selected_date = action.replace("calday_", "")
-        await show_calendar_day(query, selected_date)
-
-    elif action.startswith("calprev_"):
-        year, month = map(
-            int, action.replace("calprev_", "").split("-")
-        )
-        await render_calendar(query.message, year, month, edit=True)
-
-    elif action.startswith("calnext_"):
-        year, month = map(
-            int, action.replace("calnext_", "").split("-")
-        )
-        await render_calendar(query.message, year, month, edit=True)
-
-    elif action.startswith("caltoday_"):
-        year, month = map(
-            int, action.replace("caltoday_", "").split("-")
-        )
-        await render_calendar(query.message, year, month, edit=True)
-
-    elif action.startswith("calback_"):
-        year, month = map(
-            int, action.replace("calback_", "").split("-")
-        )
-        await render_calendar(query.message, year, month)
-
-
-# ==================================================
-# AVVIO
-# ==================================================
-
-def main():
-    if not TOKEN:
-        raise RuntimeError(
-            "TELEGRAM_BOT_TOKEN non configurato."
-        )
-
-    init_db()
-
-    if not ALLOWED_USERS:
-        print("ATTENZIONE: nessun utente autorizzato configurato.")
-
-    app = (
-        Application.builder()
-        .token(TOKEN)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
-
-    app.add_handler(CommandHandler("id", get_id))
-    app.add_handler(CommandHandler("chatid", get_chat_id))
-    app.add_handler(CommandHandler("start", start))
-
-    app.add_handler(
-        CallbackQueryHandler(
-            assistant_start,
-            pattern=r"^assistant$"
-        )
-    )
-
-    add_conversation = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(
-                begin_add,
-                pattern=r"^add_(tasks|equipment|boats)$"
-            )
-        ],
-        states={
-            WAITING_TEXT: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    save_new_text
-                )
-            ],
-            WAITING_DATE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    save_new_date
-                )
-            ]
-        },
-        fallbacks=[
-            CommandHandler("annulla", cancel)
-        ],
-        allow_reentry=True
-    )
-
-    edit_conversation = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(
-                begin_edit,
-                pattern=r"^edit_(tasks|equipment|boats)_\d+$"
-            )
-        ],
-        states={
-            EDIT_FIELD: [
-                CallbackQueryHandler(
-                    choose_edit_field,
-                    pattern=r"^field_(text|date)$"
-                )
-            ],
-            EDIT_TEXT: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    save_edit_text
-                )
-            ],
-            EDIT_DATE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    save_edit_date
-                )
-            ]
-        },
-        fallbacks=[
-            CommandHandler("annulla", cancel)
-        ],
-        allow_reentry=True
-    )
-
-    app.add_handler(add_conversation)
-    app.add_handler(edit_conversation)
-    app.add_handler(CallbackQueryHandler(buttons))
-
-    print("NUCLEO BOT avviato.")
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+             
