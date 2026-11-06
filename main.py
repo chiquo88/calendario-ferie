@@ -50,7 +50,6 @@ DB = DATA_DIR / "nucleo.db"
 DOCS_DIR = Path(__file__).resolve().parent / "documenti"
 PDF_NAME = "SMM   6 Norme per le immersioni - ediz. ott 2017.pdf"
 
-# Stati delle conversazioni
 WAITING_TEXT = 1
 WAITING_DATE = 2
 EDIT_FIELD = 3
@@ -114,7 +113,6 @@ def init_db():
         );
         """)
 
-        # Aggiornamento compatibile con il vecchio database
         add_column(con, "tasks", "event_date", "TEXT")
         add_column(con, "tasks", "notified", "INTEGER DEFAULT 0")
 
@@ -131,14 +129,13 @@ def init_db():
 def authorized(user):
     return user is not None and user.id in ALLOWED_USERS
 
-def deny(update):
+async def deny(update):
     if update.callback_query:
-        return update.callback_query.answer(
+        await update.callback_query.answer(
             "Accesso non autorizzato.", show_alert=True
         )
-
-    if update.effective_message:
-        return update.effective_message.reply_text(
+    elif update.effective_message:
+        await update.effective_message.reply_text(
             "⛔ Accesso riservato al personale autorizzato."
         )
 
@@ -222,7 +219,7 @@ def main_keyboard():
     ])
 
 # ==================================================
-# ASSISTENTE DOCUMENTALE: INVIO PDF
+# ASSISTENTE DOCUMENTALE
 # ==================================================
 
 async def assistant_start(update, context):
@@ -282,6 +279,9 @@ def display_date(value):
 
 def now_text():
     return datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
+
+def today_local():
+    return datetime.now(TZ).date()
 
 # ==================================================
 # VISUALIZZAZIONE ELENCHI
@@ -765,7 +765,7 @@ def calendar_keyboard(year, month):
         + timedelta(days=1)
     )
 
-    today = date.today()
+    today = today_local()
 
     keyboard.append([
         InlineKeyboardButton(
@@ -907,7 +907,7 @@ async def send_due_notifications(application):
         print("GROUP_CHAT_ID non valido.")
         return False
 
-    today = datetime.now(TZ).date()
+    today = today_local()
 
     activity_date = (today + timedelta(days=10)).isoformat()
     revision_date = (today + timedelta(days=14)).isoformat()
@@ -1074,7 +1074,7 @@ async def buttons(update, context):
         await show_list(update, action)
 
     elif action == "calendar":
-        today = date.today()
+        today = today_local()
         await render_calendar(
             query.message,
             today.year,
@@ -1136,7 +1136,6 @@ def main():
     app.add_handler(CommandHandler("chatid", get_chat_id))
     app.add_handler(CommandHandler("start", start))
 
-    # Assistente documentale
     app.add_handler(
         CallbackQueryHandler(
             assistant_start,
@@ -1144,7 +1143,6 @@ def main():
         )
     )
 
-    # Inserimento
     add_conversation = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(
@@ -1172,7 +1170,6 @@ def main():
         allow_reentry=True
     )
 
-    # Modifica
     edit_conversation = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(
@@ -1208,8 +1205,6 @@ def main():
 
     app.add_handler(add_conversation)
     app.add_handler(edit_conversation)
-
-    # Altri pulsanti
     app.add_handler(CallbackQueryHandler(buttons))
 
     print("NUCLEO BOT avviato.")
