@@ -218,7 +218,6 @@ def init_db():
         add_column(con, "boats", "revision_date", "TEXT")
         add_column(con, "boats", "notified", "INTEGER DEFAULT 0")
 
-        # Categorie iniziali: vengono aggiunte solo se mancanti.
         initial_categories = [
             "Questura",
             "Camera iperbarica",
@@ -1389,7 +1388,6 @@ def month_events(year, month):
     return events
 
 
-
 def calendar_keyboard(year, month):
     events = month_events(year, month)
     today = today_local()
@@ -1414,26 +1412,25 @@ def calendar_keyboard(year, month):
                 day_events = events.get(current_date, [])
 
                 has_activity = any(
-                    label == "📋 Attività"
-                    for label, text in day_events
+                    event_label == "📋 Attività"
+                    for event_label, event_text in day_events
                 )
 
                 has_reminder = any(
-                    label == "🔔 Promemoria"
-                    for label, text in day_events
+                    event_label == "🔔 Promemoria"
+                    for event_label, event_text in day_events
                 )
 
                 label = str(day)
 
-if selected_date == today:
-    label = f"[{day}]"
+                if selected_date == today:
+                    label = f"[{day}]"
 
-if has_activity and has_reminder:
-    label += "*'"
-elif has_activity:
-    label += "*"
-elif has_reminder:
-    label += "'"
+                if has_activity:
+                    label += "*"
+
+                if has_reminder:
+                    label += "'"
 
                 row.append(
                     InlineKeyboardButton(
@@ -1445,6 +1442,7 @@ elif has_reminder:
         keyboard.append(row)
 
     previous_month = date(year, month, 1) - timedelta(days=1)
+
     next_month = (
         date(year, month, calendar.monthrange(year, month)[1])
         + timedelta(days=1)
@@ -1491,9 +1489,9 @@ async def render_calendar(message, year, month, edit=False):
     text = (
         month_title(year, month)
         + "\n\n"
-        + "👉 Oggi\n"
-        + "📋 Attività programmate\n"
-        + "🔔 Promemoria con notifica alle 08:00\n\n"
+        + "[ ] Oggi\n"
+        + "* Attività programmate\n"
+        + "' Promemoria con notifica alle 08:00\n\n"
         + "Seleziona un giorno per vedere i dettagli."
     )
 
@@ -2056,7 +2054,7 @@ def main():
         allow_reentry=True
     )
 
-        # Prima viene gestita la conversazione dei Luoghi e Numeri Utili
+    # Prima viene gestita la conversazione dei Luoghi e Numeri Utili
     app.add_handler(location_conversation)
 
     # Seguono le altre conversazioni
