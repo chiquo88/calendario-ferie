@@ -2067,6 +2067,7 @@ app.add_handler(add_conversation)
 app.add_handler(edit_conversation)
 
 app.add_handler(CallbackQueryHandler(buttons))
+    
     print("NUCLEO BOT avviato.")
 
     app.run_polling()
