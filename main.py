@@ -2059,15 +2059,16 @@ def main():
         allow_reentry=True
     )
 
-    # Prima viene gestita la conversazione dei Luoghi e Numeri Utili
-app.add_handler(location_conversation)
+        # Prima viene gestita la conversazione dei Luoghi e Numeri Utili
+    app.add_handler(location_conversation)
 
-# Seguono le altre conversazioni
-app.add_handler(add_conversation)
-app.add_handler(edit_conversation)
+    # Seguono le altre conversazioni
+    app.add_handler(add_conversation)
+    app.add_handler(edit_conversation)
 
-app.add_handler(CallbackQueryHandler(buttons))
-    
+    # Gestione degli altri pulsanti
+    app.add_handler(CallbackQueryHandler(buttons))
+
     print("NUCLEO BOT avviato.")
 
     app.run_polling()
