@@ -1389,6 +1389,7 @@ def month_events(year, month):
     return events
 
 
+
 def calendar_keyboard(year, month):
     events = month_events(year, month)
     today = today_local()
@@ -1410,11 +1411,6 @@ def calendar_keyboard(year, month):
                 selected_date = date(year, month, day)
                 current_date = selected_date.isoformat()
 
-                markers = ""
-
-                if selected_date == today:
-                    markers += "👉"
-
                 day_events = events.get(current_date, [])
 
                 has_activity = any(
@@ -1427,16 +1423,17 @@ def calendar_keyboard(year, month):
                     for label, text in day_events
                 )
 
-                if has_activity:
-                    markers += "📋"
-
-                if has_reminder:
-                    markers += "🔔"
-
                 label = str(day)
 
-                if markers:
-                    label += " " + markers
+                if selected_date == today:
+                    label = f"[{day}]"
+
+                if has_activity and has_reminder:
+                    label += " A/P"
+                elif has_activity:
+                    label += " A"
+                elif has_reminder:
+                    label += " P"
 
                 row.append(
                     InlineKeyboardButton(
@@ -1459,7 +1456,7 @@ def calendar_keyboard(year, month):
             callback_data=f"calprev_{previous_month.year}-{previous_month.month}"
         ),
         InlineKeyboardButton(
-            "📅 Oggi",
+            "OGGI",
             callback_data=f"caltoday_{today.year}-{today.month}"
         ),
         InlineKeyboardButton(
@@ -1470,7 +1467,7 @@ def calendar_keyboard(year, month):
 
     keyboard.append([
         InlineKeyboardButton(
-            "➕ Nuova attività", callback_data="add_tasks"
+            "➕ Attività", callback_data="add_tasks"
         ),
         InlineKeyboardButton(
             "🔔 Promemoria", callback_data="add_reminder"
