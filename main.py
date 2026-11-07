@@ -1425,15 +1425,15 @@ def calendar_keyboard(year, month):
 
                 label = str(day)
 
-                if selected_date == today:
-                    label = f"[{day}]"
+if selected_date == today:
+    label = f"[{day}]"
 
-                if has_activity and has_reminder:
-                    label += " A/P"
-                elif has_activity:
-                    label += " A"
-                elif has_reminder:
-                    label += " P"
+if has_activity and has_reminder:
+    label += "*'"
+elif has_activity:
+    label += "*"
+elif has_reminder:
+    label += "'"
 
                 row.append(
                     InlineKeyboardButton(
